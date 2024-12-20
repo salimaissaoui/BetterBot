@@ -1,0 +1,6 @@
+alpaca-trade-api==2.3.0
+pandas==1.5.3
+numpy==1.23.5
+scikit-learn==1.2.2
+xgboost==1.7.4
+TA-Lib==0.4.0
