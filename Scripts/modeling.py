@@ -15,7 +15,7 @@ from .database import get_session, StockData
 from .utils import XGBClassifierWrapper, LGBMClassifierWrapper
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 
@@ -117,7 +117,7 @@ def retrain_model():
         with get_session() as session:
             records = session.query(StockData).filter(StockData.symbol == sym).order_by(StockData.timestamp.asc()).all()
 
-        if not records or len(records) < 30:
+        if not records or len(records) < 0:
             logging.info(f"Insufficient data for {sym}. Skipping.")
             continue
 

@@ -8,7 +8,7 @@ from .modeling import retrain_model
 from .utils import is_market_open
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 
@@ -72,80 +72,119 @@ def submit_notional_order(symbol, side, notional):
 
 def on_bar(bar, model):
     """
-    Callback for each new bar. Inserts data, possibly retrains model, and updates indicators.
-    Then triggers trade logic if market is open.
+    Callback for each new bar. Inserts data, updates indicators, retrains model if needed,
+    and triggers trade logic if the market is open.
     """
-    from .database import insert_stock_data  # local import to avoid circular
+    from .database import insert_stock_data  # Local import to avoid circular dependencies
     global bar_count_since_last_train, active_positions, previous_obv, latest_indicators_dict
 
     sym = bar.symbol
     ts = bar.timestamp
 
     # Insert the new bar into the database
-    insert_stock_data(sym, bar)
+    try:
+        insert_stock_data(sym, bar)
+        logging.info(f"Inserted new bar for {sym} at {ts}.")
+    except Exception as e:
+        logging.error(f"Error inserting bar for {sym}: {e}")
+        return model
 
-    # Periodic retraining logic (bar_count_since_last_train is a global counter)
+    # Periodic retraining logic
     bar_count_since_last_train += 1
-    if bar_count_since_last_train >= 1:  # you can set this to config.RETRAIN_FREQUENCY
-        new_model = retrain_model()
-        if new_model is not None:
-            model = new_model
-            logging.info("Model retrained successfully.")
-        bar_count_since_last_train = 0
+    if bar_count_since_last_train >= 10:  # Adjust frequency as needed
+        try:
+            new_model = retrain_model()
+            if new_model is not None:
+                model = new_model
+                logging.info("Model retrained successfully.")
+            bar_count_since_last_train = 0
+        except Exception as e:
+            logging.error(f"Error during model retraining: {e}")
 
     if model is None:
-        logging.info("No trained model available for predictions.")
-        return model  # Return in case we updated the model
+        logging.info("No trained model available. Skipping predictions.")
+        return model
 
     # Fetch recent data from DB for feature generation
-    with get_session() as session:
-        records = session.query(StockData).filter(StockData.symbol == sym).order_by(StockData.timestamp.desc()).all()
+    try:
+        with get_session() as session:
+            records = (
+                session.query(StockData)
+                .filter(StockData.symbol == sym)
+                .order_by(StockData.timestamp.desc())
+                .limit(30)
+                .all()
+            )
+    except Exception as e:
+        logging.error(f"Error fetching data from database for {sym}: {e}")
+        return model
 
     if not records or len(records) < 30:
+        logging.warning(f"Insufficient data for {sym}. Skipping processing.")
         return model
 
-    import pandas as pd
-    data = pd.DataFrame([{
-        'open': r.open,
-        'high': r.high,
-        'low': r.low,
-        'close': r.close,
-        'volume': r.volume,
-        'timestamp': r.timestamp
-    } for r in records])
-    data = data.sort_values('timestamp')
-    data = compute_technical_indicators(data)
-    if data.empty:
-        return model
+    # Prepare data for feature generation
+    try:
+        import pandas as pd
+        data = pd.DataFrame(
+            [
+                {
+                    'open': r.open,
+                    'high': r.high,
+                    'low': r.low,
+                    'close': r.close,
+                    'volume': r.volume,
+                    'timestamp': r.timestamp,
+                }
+                for r in records
+            ]
+        )
+        data = data.sort_values('timestamp')
+        data = compute_technical_indicators(data)
+        if data.empty:
+            logging.warning(f"No technical indicators computed for {sym}. Skipping.")
+            return model
 
-    X_all, _ = prepare_features(data)
-    if X_all.empty:
+        X_all, _ = prepare_features(data)
+        if X_all.empty:
+            logging.warning(f"No features prepared for {sym}. Skipping.")
+            return model
+    except Exception as e:
+        logging.error(f"Error preparing data for {sym}: {e}")
         return model
 
     # Store latest indicators
-    last_row = data.iloc[-1]
-    macd_diff = last_row.get('macd_diff', 0.0)
-    current_obv = last_row.get('obv', 0.0)
-    prev_obv_val = previous_obv.get(sym, current_obv)
-    previous_obv[sym] = current_obv
+    try:
+        last_row = data.iloc[-1]
+        macd_diff = last_row.get('macd_diff', 0.0)
+        current_obv = last_row.get('obv', 0.0)
+        prev_obv_val = previous_obv.get(sym, current_obv)
+        previous_obv[sym] = current_obv
 
-    latest_indicators_dict[sym] = {
-        'macd_diff': macd_diff,
-        'obv': current_obv,
-        'obv_prev': prev_obv_val
-    }
+        latest_indicators_dict[sym] = {
+            'macd_diff': macd_diff,
+            'obv': current_obv,
+            'obv_prev': prev_obv_val,
+        }
+    except Exception as e:
+        logging.error(f"Error storing indicators for {sym}: {e}")
+        return model
 
     # Execute trading logic if market is open
     if is_market_open():
-        # Make predictions
         try:
+            # Make predictions
             ensemble_pred = model.predict_proba(X_all)[:, 1]
             latest_prob = ensemble_pred[-1]
+
+            # Execute trade logic
             execute_trade([(sym, latest_prob)], model)
+            logging.info(f"Executed trade logic for {sym}. Probability: {latest_prob:.2f}")
         except Exception as e:
             logging.error(f"Error during prediction/trade execution for {sym}: {e}")
 
     return model
+
 
 
 def execute_trade(pred_results, model):

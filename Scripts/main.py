@@ -6,35 +6,27 @@ from alpaca_trade_api import Stream
 
 from .config import APCA_API_KEY_ID, APCA_API_SECRET_KEY, RETRAIN_FREQUENCY
 from .database import engine
-from .data_fetch import fetch_symbols_from_api, fetch_historical_data, insert_historical_data
+from Scripts.data_fetch import fetch_and_load_symbols, fetch_historical_data, insert_historical_data
 from .modeling import load_existing_model, retrain_model
 from .trade import on_bar
 from .utils import is_market_open
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 
 model = None  # Global model object
 
+
 def initialize_bot():
     """Fetch symbols, load data, and prepare the model."""
-    logging.info("Fetching symbols from API...")
-    api_symbols = fetch_symbols_from_api()
-    if not api_symbols:
-        logging.error("No symbols returned from API. Cannot proceed.")
-        return
+    logging.info("Fetching and loading symbols from API...")
+    symbols = fetch_and_load_symbols()  # Fetch and load S&P 500 symbols and data
 
-    logging.info("Inserting historical data for fetched symbols...")
-    for sym in api_symbols:
-        start_date = "2022-01-01"
-        end_date = datetime.utcnow().strftime("%Y-%m-%d")
-        hist = fetch_historical_data(sym, start_date=start_date, end_date=end_date)
-        if hist.empty:
-            logging.info(f"No historical data for {sym}. Skipping.")
-            continue
-        insert_historical_data(sym, hist)
+    if not symbols:
+        logging.error("No symbols fetched. Cannot proceed.")
+        return
 
     logging.info("Attempting to load existing model...")
     global model
@@ -49,6 +41,8 @@ def initialize_bot():
             logging.info("Initial model training failed or insufficient data.")
     else:
         logging.info("Using loaded model from previous run.")
+
+    return symbols
 
 
 def scheduled_retrain():
@@ -106,11 +100,16 @@ def start_stream(symbols):
 
 
 def main():
-    initialize_bot()
-    setup_scheduler()
-    symbols = fetch_symbols_from_api()
-    if symbols:
-        start_stream(symbols)
+    logging.info("Initializing bot...")
+    symbols = initialize_bot()  # Initialize bot and get symbols
+
+    if not symbols:
+        logging.error("Initialization failed. Exiting.")
+        return
+
+    setup_scheduler()  # Setup periodic retraining scheduler
+    logging.info("Starting data stream for fetched symbols...")
+    start_stream(symbols)  # Start streaming data for the fetched symbols
 
 
 if __name__ == "__main__":

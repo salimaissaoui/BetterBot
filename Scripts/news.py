@@ -3,7 +3,7 @@ import requests
 from datetime import datetime, timedelta
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 
