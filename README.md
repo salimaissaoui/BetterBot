@@ -1,2 +1,2 @@
 # BetterBot
- A conceptual AI trading bot 
+ A conceptual AI trading bot.
