@@ -19,7 +19,7 @@ api = REST(
     base_url=APCA_API_BASE_URL
 )
 
-def fetch_sp500_symbols_from_api(limit=50) -> list:
+def fetch_sp500_symbols_from_api(limit=25) -> list:
     """
     Fetch S&P 500 symbols directly from Alpaca API.
     Filters tradable assets available on IEX feed only.

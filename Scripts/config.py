@@ -11,14 +11,16 @@ DB_HOST = os.getenv("DB_HOST", "database-2.ctwgq2kqgrl6.us-east-2.rds.amazonaws.
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "postgres")
 
-NOTIONAL = 1000
-MODEL_LOOKBACK = 5
-FEATURE_LAGS = 2  
-SHORT_MA = 1
-LONG_MA = 1
-RSI_PERIOD = 1
-RETRAIN_FREQUENCY = 120  # in minutes
+# ------------------- Trading & Modeling Parameters ---------------------
+NOTIONAL = 1000           # Amount in dollars to spend on each trade
+MODEL_LOOKBACK = 50       # How many data points back you use to train or generate features
+FEATURE_LAGS = 2          # How many lagged returns or indicator values to include as features
+SHORT_MA = 9              # Typical short moving average period
+LONG_MA = 21             # Typical long moving average period
+RSI_PERIOD = 14           # Classic RSI period
+RETRAIN_FREQUENCY = 5   # in minutes (e.g., retrain every 2 hours)
 
+# ------------------- Market Hours & Timezone --------------------------
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 16

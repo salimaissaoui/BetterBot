@@ -54,6 +54,29 @@ def close_position(symbol):
         logging.error(f"Error closing position for {symbol}: {e}")
 
 
+def short_position(symbol, shares):
+    """
+    Submits a market order to short-sell a specified number of shares of a stock.
+    
+    Parameters:
+        symbol (str): The ticker symbol of the stock (e.g., 'AAPL').
+        shares (int): The number of shares to short.
+    """
+    logging.info(f"Submitting SHORT SELL order for {symbol} with {shares} shares.")
+    try:
+        # This creates a short position if you do not already hold these shares.
+        api.submit_order(
+            symbol=symbol,
+            qty=shares,
+            side='sell',
+            type='market',
+            time_in_force='day'
+        )
+        logging.info(f"Successfully submitted SHORT SELL order for {symbol} with {shares} shares.")
+    except Exception as e:
+        logging.error(f"Error submitting short sell order for {symbol}: {e}")
+
+
 def submit_notional_order(symbol, side, notional):
     """Submits a market order based on a notional amount."""
     logging.info(f"Submitting {side.upper()} order for {symbol}, notional: {notional}")
@@ -140,7 +163,15 @@ def on_bar(bar, model):
             ]
         )
         data = data.sort_values('timestamp')
-        data = compute_technical_indicators(data)
+
+        # Compute indicators only if they are not already computed
+        if "indicators_computed" not in data.columns or not data["indicators_computed"].all():
+            data = compute_technical_indicators(data)
+            data["indicators_computed"] = True  # Flag to indicate indicators are computed
+            logging.info(f"Computed technical indicators for {sym}.")
+        else:
+            logging.info(f"Indicators already computed for {sym}. Skipping recomputation.")
+
         if data.empty:
             logging.warning(f"No technical indicators computed for {sym}. Skipping.")
             return model
@@ -187,14 +218,17 @@ def on_bar(bar, model):
 
 
 
+
 def execute_trade(pred_results, model):
     """
     Execute trades based on model predictions and simple threshold logic.
-    Extend as needed for advanced rules.
+    Includes logic for buying, selling, and shorting.
     """
     global active_positions
     BUY_THRESHOLD = 0.55
     SELL_THRESHOLD = 0.45
+    SHORT_THRESHOLD = 0.44  # Probability below which to short
+    COVER_THRESHOLD = 0.50  # Probability above which to cover shorts
 
     for symbol, prob in pred_results:
         logging.info(f"Symbol: {symbol}, Probability: {prob}")
@@ -205,25 +239,48 @@ def execute_trade(pred_results, model):
         obv_prev = indicators.get('obv_prev', obv)
         obv_increasing = (obv > obv_prev)
 
-        want_to_buy = (prob > BUY_THRESHOLD) and (macd_diff > 0) and obv_increasing
-        want_to_sell = (prob < SELL_THRESHOLD)
+        want_to_buy = (prob > BUY_THRESHOLD) and obv_increasing
+        want_to_sell = (prob < SELL_THRESHOLD) and (symbol in active_positions and active_positions[symbol] == 'long')
+        want_to_short = (prob < SHORT_THRESHOLD) and not obv_increasing
+        want_to_cover = (prob > COVER_THRESHOLD) and (symbol in active_positions and active_positions[symbol] == 'short')
 
+        # Handle buying logic
         if want_to_buy:
             if symbol not in active_positions:
                 logging.info(f"Buying {symbol}: prob={prob:.2f}, macd_diff={macd_diff:.4f}, obv_increasing={obv_increasing}")
                 submit_notional_order(symbol, 'buy', NOTIONAL)
-                active_positions[symbol] = True
+                active_positions[symbol] = 'long'
             else:
                 logging.info(f"Already holding {symbol}, no need to buy again.")
+
+        # Handle selling logic
         elif want_to_sell:
-            if symbol in active_positions:
-                logging.info(f"Selling {symbol}: prob={prob:.2f}")
-                close_position(symbol)
-                del active_positions[symbol]
+            logging.info(f"Selling {symbol}: prob={prob:.2f}")
+            close_position(symbol)
+            del active_positions[symbol]
+
+        # Handle shorting logic
+        elif want_to_short:
+            if symbol not in active_positions:
+                latest_trade = api.get_latest_trade(symbol)  # Returns a TradeV2 object
+                price = latest_trade.price                  # Extract the numeric price
+                shares_to_short = int(NOTIONAL // price)    # Now this will work as intended
+
+                if shares_to_short > 0:
+                    logging.info(f"Shorting {symbol}: prob={prob:.2f}, macd_diff={macd_diff:.4f}, obv_increasing={obv_increasing}, shares={shares_to_short}")
+                    short_position(symbol, shares_to_short)  # Use shares instead of notional for shorting
+                    active_positions[symbol] = 'short'
+                else:
+                    logging.warning(f"Insufficient shares to short for {symbol} at current price {price:.2f} with notional {NOTIONAL:.2f}.")
+            else:
+                logging.info(f"Already holding {symbol}, no need to short again.")
+
+        # Handle covering shorts
+        elif want_to_cover:
+            logging.info(f"Covering short position for {symbol}: prob={prob:.2f}")
+            close_position(symbol)
+            del active_positions[symbol]
+
         else:
-            logging.info(f"{symbol}: Prob={prob:.2f}, no buy/sell signal triggered.")
+            logging.info(f"{symbol}: Prob={prob:.2f}, no buy/sell/short/cover signal triggered.")
 
-
-def get_latest_indicators(symbol):
-    """Retrieves the latest stored indicators for a given symbol."""
-    return latest_indicators_dict.get(symbol, {})
