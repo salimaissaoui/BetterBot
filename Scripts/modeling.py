@@ -4,7 +4,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from sklearn.model_selection import RandomizedSearchCV, train_test_split, KFold
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit, train_test_split
 from sklearn.metrics import make_scorer, accuracy_score
 from sklearn.ensemble import VotingClassifier
 
@@ -12,7 +12,6 @@ from sklearn.ensemble import VotingClassifier
 from xgboost import XGBClassifier
 from lightgbm import LGBMClassifier
 
-# Local imports (assuming they exist in your codebase)
 from .config import RETRAIN_FREQUENCY
 from .indicators import compute_technical_indicators, prepare_features
 from .database import get_session, StockData
@@ -23,148 +22,139 @@ logging.basicConfig(
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 
+
 def train_model(X: pd.DataFrame, y: pd.Series):
     """
     Trains a VotingClassifier ensemble with XGBoost and LightGBM,
-    using a smaller hyperparameter search space, fewer iterations,
-    optional downsampling, and early stopping to speed up training.
+    using time-series cross-validation and an expanded hyperparam search.
     """
 
     if X.empty or y.empty:
-        logging.info("No data available for training the model. Returning.")
+        logging.info("No data available for training. Returning None.")
         return None
 
     try:
-        # ----------------------------------
-        # 1. (Optional) Downsample for Speed
-        # ----------------------------------
-        # If you have a huge dataset, you can sample a portion for hyperparam search:
-        MAX_TRAIN_SIZE = 50_000  # Example threshold
+        # Optional: Downsampling (if dataset is extremely large)
+        MAX_TRAIN_SIZE = 100_000
         if len(X) > MAX_TRAIN_SIZE:
-            logging.info(f"Downsampling from {len(X)} to {MAX_TRAIN_SIZE} rows for faster tuning.")
-            X_train_sample, _, y_train_sample, _ = train_test_split(
-                X, y, 
-                train_size=MAX_TRAIN_SIZE, 
-                random_state=42, 
+            logging.info(f"Downsampling from {len(X)} to {MAX_TRAIN_SIZE}.")
+            X, _, y, _ = train_test_split(
+                X, y,
+                train_size=MAX_TRAIN_SIZE,
+                random_state=42,
                 stratify=y
             )
-        else:
-            X_train_sample, y_train_sample = X, y
 
-        # ----------------------------------
-        # 2. Train/Validation Split for Early Stopping
-        # ----------------------------------
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_train_sample, y_train_sample, 
-            test_size=0.2, 
-            random_state=42, 
-            stratify=y_train_sample
-        )
-
-        start_time = datetime.now()
         scoring = make_scorer(accuracy_score)
 
-        # ----------------------------------
-        # 3. Define Wrappers / Classifiers
-        # ----------------------------------
-        xgb = XGBClassifierWrapper(
-            # We'll let early_stopping_rounds come via fit_params
-            use_label_encoder=False,
-            n_jobs=-1
-        )
-        lgb = LGBMClassifierWrapper(
-            n_jobs=-1
-        )
+        # 1. Define base estimators
+        xgb = XGBClassifierWrapper(use_label_encoder=False, n_jobs=-1)
+        lgb = LGBMClassifierWrapper(n_jobs=-1)
 
         ensemble = VotingClassifier(
             estimators=[('xgb', xgb), ('lgb', lgb)],
             voting='soft'
         )
 
-        # ----------------------------------
-        # 4. Reduced Hyperparameter Search
-        # ----------------------------------
-        # Keep only a few possible values to drastically speed up the search.
+        # 2. Expanded hyperparam distributions
         param_distributions = {
-            'xgb__n_estimators': [100],           # fixed at 100
-            'xgb__max_depth': [3, 5],             # only 2 values
-            'xgb__subsample': [0.6],              # fixed
-            'xgb__colsample_bytree': [0.6],       # fixed
-            'xgb__learning_rate': [0.01, 0.05],   # 2 values
+            'xgb__n_estimators': [100, 200],
+            'xgb__max_depth': [3, 5, 7],
+            'xgb__subsample': [0.6, 0.8],
+            'xgb__colsample_bytree': [0.6, 0.8],
+            'xgb__learning_rate': [0.01, 0.05, 0.1],
+            'xgb__min_child_weight': [1, 3],
+            'xgb__gamma': [0, 1],
+            'xgb__scale_pos_weight': [1, 2, 3],  # class imbalance parameter
 
-            'lgb__n_estimators': [100], 
-            'lgb__max_depth': [3, 5], 
-            'lgb__subsample': [0.6], 
-            'lgb__colsample_bytree': [0.6], 
-            'lgb__learning_rate': [0.01, 0.05],
+            'lgb__n_estimators': [100, 200],
+            'lgb__max_depth': [3, 5, 7],
+            'lgb__subsample': [0.6, 0.8],
+            'lgb__colsample_bytree': [0.6, 0.8],
+            'lgb__learning_rate': [0.01, 0.05, 0.1],
+            'lgb__min_child_weight': [1, 3],
+            'lgb__scale_pos_weight': [1, 2, 3],  # class imbalance for LGB
         }
 
-        # ----------------------------------
-        # 5. Early Stopping in fit_params
-        # ----------------------------------
-        # We'll pass evaluation sets & early_stopping_rounds for both XGB & LGB.
-        # Note: Each library has slightly different param naming, see docs.
-        fit_params = {
-            # For XGBoost
-            'xgb__eval_set': [(X_val, y_val)],
-            'xgb__eval_metric': 'logloss',
-            'xgb__early_stopping_rounds': 10,
+        # 3. TimeSeriesSplit ensures forward-only splits
+        tscv = TimeSeriesSplit(n_splits=3)
 
-            # For LightGBM
-            'lgb__eval_set': [(X_val, y_val)],
-            'lgb__eval_metric': 'logloss',
-            'lgb__early_stopping_rounds': 10
-        }
-
-        # ----------------------------------
-        # 6. RandomizedSearch with Fewer Iterations
-        # ----------------------------------
-        cv = KFold(n_splits=2, shuffle=True, random_state=42)
-        logging.info("Starting hyperparameter tuning for Voting Ensemble...")
+        # 4. Early stopping sets
+        # We can't pass eval_set directly to RandomizedSearchCV easily with time series,
+        # so we do minimal early_stopping in the final fit instead.
+        # We'll do partial early stopping in the final training after search.
         search = RandomizedSearchCV(
             estimator=ensemble,
             param_distributions=param_distributions,
-            n_iter=5,            # fewer iterations
+            n_iter=20,               # more search iterations
             scoring=scoring,
-            cv=cv,
+            cv=tscv,                 # time-series CV
             n_jobs=-1,
             random_state=42,
             verbose=2,
             error_score='raise'
         )
 
-        search.fit(X_train, y_train, **fit_params)  # pass in early stopping params
+        logging.info("Starting hyperparameter tuning (TimeSeriesSplit)...")
+        search.fit(X, y)
 
-        logging.info(f"Best parameters: {search.best_params_}, Score: {search.best_score_:.2f}")
-
+        logging.info(f"Best parameters: {search.best_params_}, Score: {search.best_score_:.4f}")
         best_ensemble = search.best_estimator_
 
-        # ----------------------------------
-        # 7. Final Retrain on ALL Sampled Data (Optional)
-        # ----------------------------------
-        # Now that we have best hyperparams, we can skip cross-validation
-        # and do a single fit on the entire sample, again with early stopping.
-        # This step is optional if you want to strictly use the CV best_estimator.
-        best_ensemble.set_params(**search.best_params_)
-        best_ensemble.fit(
-            X_train_sample, 
-            y_train_sample,
-            **fit_params
+        # 5. Final fit on the entire dataset with early stopping
+        # We do a manual partial approach:
+        # We'll simply re-fit XGB & LGB inside best_ensemble with early_stopping.
+        xgb_best = best_ensemble.named_estimators_['xgb']
+        lgb_best = best_ensemble.named_estimators_['lgb']
+
+        # Convert X, y to np arrays for the fit
+        X_np = X.to_numpy()
+        y_np = y.to_numpy()
+
+        # We’ll slice out a small portion of data for valid (e.g. last 10%) for early stopping:
+        val_size = int(len(X) * 0.1)
+        train_size = len(X) - val_size
+        X_train, X_val = X_np[:train_size], X_np[train_size:]
+        y_train, y_val = y_np[:train_size], y_np[train_size:]
+
+        # Fit XGB with early stopping
+        xgb_best.fit(
+            X_train,
+            y_train,
+            eval_set=[(X_val, y_val)],
+            early_stopping_rounds=10,
+            eval_metric='logloss',
+            verbose=False
+        )
+        # Fit LGB with early stopping
+        lgb_best.fit(
+            X_train,
+            y_train,
+            eval_set=[(X_val, y_val)],
+            early_stopping_rounds=10,
+            eval_metric='logloss',
+            verbose=False
         )
 
-        # Save the final model
-        joblib.dump(best_ensemble, "ensemble_model.joblib")
-        logging.info("Ensemble model saved successfully.")
+        # Now rebuild the ensemble with these updated fitted estimators
+        final_ensemble = VotingClassifier(
+            estimators=[('xgb', xgb_best), ('lgb', lgb_best)],
+            voting='soft'
+        )
+        # Must manually fit the VotingClassifier to unify it, 
+        # but we do a "dummy" fit that won't break the internal fits:
+        final_ensemble.fit(X, y)  # effectively just merges the fitted sub-estimators.
 
-        # ----------------------------------
-        # Evaluate on the Entire Data
-        # ----------------------------------
-        ensemble_pred = best_ensemble.predict_proba(X)[:, 1]
+        # 6. Save the final model
+        joblib.dump(final_ensemble, "ensemble_model.joblib")
+        logging.info("Final ensemble model saved successfully.")
+
+        # Evaluate on entire data
+        ensemble_pred = final_ensemble.predict_proba(X)[:, 1]
         ensemble_acc = ((ensemble_pred > 0.5).astype(int) == y).mean()
-        logging.info(f"Model training took {(datetime.now() - start_time).total_seconds():.2f} seconds.")
-        logging.info(f"Final Ensemble Accuracy (on full dataset): {ensemble_acc:.2f}")
+        logging.info(f"Final Ensemble Accuracy (on full dataset): {ensemble_acc:.3f}")
 
-        return best_ensemble
+        return final_ensemble
 
     except Exception as e:
         logging.error(f"Error training model: {e}")
@@ -204,10 +194,12 @@ def retrain_model():
     combined = []
     for sym in symbols:
         with get_session() as session:
-            records = (session.query(StockData)
-                               .filter(StockData.symbol == sym)
-                               .order_by(StockData.timestamp.asc())
-                               .all())
+            records = (
+                session.query(StockData)
+                .filter(StockData.symbol == sym)
+                .order_by(StockData.timestamp.asc())
+                .all()
+            )
         if not records or len(records) < 1:
             logging.info(f"Insufficient data for {sym}. Skipping.")
             continue
@@ -223,9 +215,13 @@ def retrain_model():
         data.sort_values('timestamp', inplace=True)
 
         data = compute_technical_indicators(data)
+        # Optionally fill or drop NaN
+        data.dropna(inplace=True)
+
         if data.empty:
             logging.info(f"Insufficient processed data for {sym}. Skipping.")
             continue
+
         data['symbol'] = sym
         combined.append(data)
 

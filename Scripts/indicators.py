@@ -2,20 +2,15 @@ import logging
 import pandas as pd
 import numpy as np
 
-# If you want to integrate TA-Lib, uncomment and install:
-# import talib
-
-from ta.momentum import RSIIndicator
-from ta.trend import SMAIndicator, MACD
-from ta.volatility import BollingerBands, AverageTrueRange
-from ta.volume import OnBalanceVolumeIndicator
-
-# Example of user-defined parameters (import from .config or define inline):
-SHORT_MA = 10
-LONG_MA = 50
-RSI_PERIOD = 14
-FEATURE_LAGS = 3
-ATR_WINDOW = 14  # More standard than 1 for smoothing
+from .config import (
+    SHORT_MA,
+    LONG_MA,
+    RSI_PERIOD,
+    FEATURE_LAGS,
+    ATR_WINDOW,
+    DOJI_THRESHOLD,
+    TARGET_THRESHOLD
+)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -24,164 +19,144 @@ logging.basicConfig(
 
 def compute_technical_indicators(data: pd.DataFrame) -> pd.DataFrame:
     """
-    Computes a variety of technical indicators on the input DataFrame and returns a processed DataFrame.
-
-    Best Practices/Improvements:
-    1. Have enough warm-up data loaded (e.g., extra historical rows) so the earliest indicator values are not skewed.
-    2. Reindex the data if needed to ensure it’s at a consistent frequency (daily, hourly, etc.).
-    3. Don't return empty too early; instead compute indicators and only drop rows after they're all populated.
-    4. Use a higher ATR window (14) if you want more "standard" ATR smoothing.
-    5. (Optional) Use TA-Lib to cross-check indicator values if exact reproducibility with charting platforms is desired.
+    Computes a variety of technical indicators manually, without external libraries.
+    Returns a processed DataFrame with columns for each indicator.
     """
-
     logging.debug("Starting computation of technical indicators...")
     logging.debug(f"Initial data shape: {data.shape}")
     logging.debug(f"Initial data columns: {data.columns.tolist()}")
 
-    # -------------------------------------------------------------------------
-    # 1. Basic checks & optional reindexing
-    # -------------------------------------------------------------------------
-    if data.empty or not {'open', 'high', 'low', 'close', 'volume'}.issubset(data.columns):
-        logging.warning("Data is empty or missing essential columns (open, high, low, close, volume).")
+    required_cols = {'open', 'high', 'low', 'close', 'volume'}
+    if data.empty or not required_cols.issubset(data.columns):
+        logging.warning("Data is empty or missing essential columns.")
         return pd.DataFrame()
 
-    # Example: reindex to daily frequency if needed (commented out)
-    # data = data.sort_index()
-    # full_idx = pd.date_range(start=data.index.min(), end=data.index.max(), freq='D')
-    # data = data.reindex(full_idx).fillna(method='ffill')
+    # Convert to numeric, just in case
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        data[col] = pd.to_numeric(data[col], errors='coerce')
 
-    # Make a copy to avoid mutating the original
+    # Sort by timestamp if present
+    if 'timestamp' in data.columns:
+        data['timestamp'] = pd.to_datetime(data['timestamp'], errors='coerce')
+        data.sort_values('timestamp', inplace=True)
+        data.reset_index(drop=True, inplace=True)
+    else:
+        if isinstance(data.index, pd.DatetimeIndex):
+            data.sort_index(inplace=True)
+
     data = data.copy()
 
-    # -------------------------------------------------------------------------
-    # 2. Basic returns
-    # -------------------------------------------------------------------------
+    # 1. Returns
     data['return'] = data['close'].pct_change()
-    logging.debug("Computed daily returns.")
 
-    # -------------------------------------------------------------------------
-    # 3. SMA Indicators (Short & Long)
-    # -------------------------------------------------------------------------
-    sma_short = SMAIndicator(close=data['close'], window=SHORT_MA)
-    sma_long = SMAIndicator(close=data['close'], window=LONG_MA)
-    data['ma_short'] = sma_short.sma_indicator()
-    data['ma_long'] = sma_long.sma_indicator()
+    # 2. SMA (Short & Long)
+    data['ma_short'] = data['close'].rolling(window=SHORT_MA).mean()
+    data['ma_long'] = data['close'].rolling(window=LONG_MA).mean()
     data['ma_ratio'] = data['ma_short'] / data['ma_long']
-    logging.debug("Computed SMA indicators.")
 
-    # -------------------------------------------------------------------------
-    # 4. RSI
-    # -------------------------------------------------------------------------
-    rsi = RSIIndicator(close=data['close'], window=RSI_PERIOD)
-    data['rsi'] = rsi.rsi()
-    logging.debug("Computed RSI.")
+    # 3. RSI
+    diff = data['close'].diff(1)
+    gain = diff.clip(lower=0)
+    loss = -diff.clip(upper=0)
+    avg_gain = gain.rolling(window=RSI_PERIOD).mean()
+    avg_loss = loss.rolling(window=RSI_PERIOD).mean()
+    rs = avg_gain / avg_loss
+    data['rsi'] = 100 - (100 / (1 + rs))
 
-    # -------------------------------------------------------------------------
-    # 5. MACD
-    # -------------------------------------------------------------------------
-    macd = MACD(close=data['close'])
-    data['macd'] = macd.macd()
-    data['macd_signal'] = macd.macd_signal()
-    data['macd_diff'] = macd.macd_diff()
-    logging.debug("Computed MACD indicators.")
+    # 4. MACD
+    ema_fast = data['close'].ewm(span=12, adjust=False).mean()
+    ema_slow = data['close'].ewm(span=26, adjust=False).mean()
+    data['macd'] = ema_fast - ema_slow
+    data['macd_signal'] = data['macd'].ewm(span=9, adjust=False).mean()
+    data['macd_diff'] = data['macd'] - data['macd_signal']
 
-    # -------------------------------------------------------------------------
-    # 6. Bollinger Bands
-    # -------------------------------------------------------------------------
-    # Typically needs at least 20 bars, so ensure you have enough warm-up data loaded.
-    bb = BollingerBands(close=data['close'], window=20, window_dev=2)
-    data['bb_h'] = bb.bollinger_hband()
-    data['bb_l'] = bb.bollinger_lband()
-    data['bb_m'] = bb.bollinger_mavg()
-    data['bb_w'] = bb.bollinger_wband()
-    data['bb_p'] = bb.bollinger_pband()
-    logging.debug("Computed Bollinger Bands.")
+    # 5. Bollinger Bands
+    bb_window = 20
+    rolling_mean = data['close'].rolling(window=bb_window).mean()
+    rolling_std = data['close'].rolling(window=bb_window).std()
+    data['bb_m'] = rolling_mean
+    data['bb_h'] = rolling_mean + (2 * rolling_std)
+    data['bb_l'] = rolling_mean - (2 * rolling_std)
+    data['bb_w'] = (data['bb_h'] - data['bb_l']) / data['bb_m']
+    data['bb_p'] = (data['close'] - data['bb_l']) / (data['bb_h'] - data['bb_l'])
 
-    # -------------------------------------------------------------------------
-    # 7. ATR (using a 14-day window for smoothing)
-    # -------------------------------------------------------------------------
-    atr = AverageTrueRange(high=data['high'], low=data['low'], close=data['close'], window=ATR_WINDOW)
-    data['atr'] = atr.average_true_range()
-    logging.debug("Computed ATR.")
+    # 6. ATR
+    data['hl'] = data['high'] - data['low']
+    data['hc'] = (data['high'] - data['close'].shift(1)).abs()
+    data['lc'] = (data['low'] - data['close'].shift(1)).abs()
+    data['tr'] = data[['hl', 'hc', 'lc']].max(axis=1)
+    data['atr'] = data['tr'].rolling(window=ATR_WINDOW).mean()
+    data.drop(['hl', 'hc', 'lc', 'tr'], axis=1, inplace=True)
 
-    # -------------------------------------------------------------------------
-    # 8. OBV
-    # -------------------------------------------------------------------------
-    obv = OnBalanceVolumeIndicator(close=data['close'], volume=data['volume'])
-    data['obv'] = obv.on_balance_volume()
-    logging.debug("Computed OBV.")
+    # 7. OBV
+    price_diff_sign = np.sign(data['close'].diff())
+    price_diff_sign.iloc[0] = 0
+    data['obv'] = (price_diff_sign * data['volume']).fillna(0).cumsum()
+    data['obv_ma'] = data['obv'].rolling(window=10, min_periods=10).mean()
 
-    # -------------------------------------------------------------------------
-    # 9. Identify Doji candlesticks
-    # -------------------------------------------------------------------------
+    # 8. Stochastic
+    stoch_window = 14
+    lowest_low = data['low'].rolling(stoch_window).min()
+    highest_high = data['high'].rolling(stoch_window).max()
+    data['stoch'] = 100 * (data['close'] - lowest_low) / (highest_high - lowest_low)
+    data['stoch_signal'] = data['stoch'].rolling(window=3).mean()
+
+    # 9. Doji
     data['doji'] = np.where(
-        (np.abs(data['close'] - data['open']) < 0.001 * data['open']), 
-        1, 
+        (np.abs(data['close'] - data['open']) < DOJI_THRESHOLD * data['open']),
+        1,
         0
     )
-    logging.debug("Computed Doji candlestick flags.")
 
+    # ---- NEW FEATURES ----
+    # Rolling standard deviation of returns
+    data['rolling_ret_std'] = data['return'].rolling(window=10).std()  # 10-day example
 
-    # -------------------------------------------------------------------------
-    # 11. Compute feature lags
-    # -------------------------------------------------------------------------
+    # Rolling average volume
+    data['rolling_vol_avg'] = data['volume'].rolling(window=10).mean()
+
+    # 10. Lagged returns
     for i in range(1, FEATURE_LAGS + 1):
         data[f'return_lag_{i}'] = data['return'].shift(i)
-    logging.debug("Computed feature lags for returns.")
 
-    # -------------------------------------------------------------------------
-    # 12. Future return and target
-    # -------------------------------------------------------------------------
+    # 11. Future return + target with threshold
     data['future_return'] = data['close'].shift(-1) / data['close'] - 1
-    data['target'] = (data['future_return'] > 0).astype(int)
-    logging.debug("Computed future return and target.")
+    # Instead of (future_return > 0), use a threshold from config
+    data['target'] = (data['future_return'] >= TARGET_THRESHOLD).astype(int)
 
-    # -------------------------------------------------------------------------
-    # 13. Drop rows where any indicator is NaN due to warm-up or shifting
-    # -------------------------------------------------------------------------
-    # If you want to keep partial data, you can skip dropping or do it selectively.
-    logging.debug(f"Rows before final dropna: {len(data)}")
-    data.dropna(inplace=True)
-    logging.debug(f"Rows after final dropna: {len(data)}")
-    logging.debug("Final processed data preview:")
-    logging.debug(data.head().to_string())
+    # Optional: fill or drop NaNs
+    # data.dropna(inplace=True)     # Traditional approach: drop incomplete rows
+    # Or fill them forward:
+    # data.fillna(method='ffill', inplace=True)
 
+    logging.debug(f"Final processed data preview:\n{data.head(15).to_string()}")
     return data
 
 
 def prepare_features(data: pd.DataFrame):
     """
-    Splits the DataFrame into features (X) and target (y).
-
-    Assumes 'target' is already created as a binary label in the DataFrame.
-    Returns:
-        X (DataFrame): Feature matrix
-        y (Series): Target labels
+    Prepares the feature matrix (X) and target vector (y) for modeling.
     """
-    if data.empty:
-        logging.warning("Input data is empty in prepare_features. Returning empty X, y.")
-        return pd.DataFrame(), pd.Series(dtype=float)
-
-    # List of features you want for your model
-    features = [
+    # Expanded to include the new features: rolling_ret_std, rolling_vol_avg
+    expected_features = [
         'ma_short', 'ma_long', 'ma_ratio',
         'rsi', 'return',
         'macd', 'macd_signal', 'macd_diff',
         'bb_h', 'bb_l', 'bb_m', 'bb_w', 'bb_p',
-        'atr', 'doji', 'obv'
-    ] + [f'return_lag_{i}' for i in range(1, FEATURE_LAGS + 1)]
+        'atr', 'doji',
+        'obv', 'obv_ma', 'stoch', 'stoch_signal',
+        'rolling_ret_std', 'rolling_vol_avg'
+    ]
 
-    # Keep only columns that exist
-    available = data.columns
-    features = [f for f in features if f in available]
+    available_features = list(data.columns)
+    print(f"Available features: {available_features}")
+    print(f"Expected features: {expected_features}")
 
-    if not features:
-        logging.warning("No requested features found in data. Returning empty X, y.")
-        return pd.DataFrame(), pd.Series(dtype=float)
+    X = data.reindex(columns=expected_features, fill_value=0)
+    if 'target' in data.columns:
+        y = data['target']
+    else:
+        y = pd.Series(dtype=float)
 
-    X = data[features].copy()
-    y = data['target'].copy() if 'target' in data.columns else pd.Series(dtype=float)
-
-    # Log info
-    logging.debug(f"Prepared features X shape: {X.shape}, y length: {len(y)}")
+    print(f"Final X shape: {X.shape}, y length: {len(y)}")
     return X, y
