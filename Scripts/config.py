@@ -13,7 +13,7 @@ DB_NAME = os.getenv("DB_NAME", "postgres")
 
 # ------------------- Trading & Modeling Parameters ---------------------
 ATR_WINDOW = 14
-NOTIONAL = 1000           # Amount in dollars to spend on each trade
+NOTIONAL = 5000           # Amount in dollars to spend on each trade
 MODEL_LOOKBACK = 50       # How many data points back you use to train or generate features
 FEATURE_LAGS = 2          # How many lagged returns or indicator values to include as features
 SHORT_MA = 9              # Typical short moving average period
