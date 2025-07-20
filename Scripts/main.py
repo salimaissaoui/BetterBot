@@ -1,10 +1,13 @@
+import asyncio
 import logging
 import atexit
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
-from alpaca_trade_api import Stream
+from ib_insync import IB, util, Stock
+from zoneinfo import ZoneInfo
 
-from .config import APCA_API_KEY_ID, APCA_API_SECRET_KEY, RETRAIN_FREQUENCY
+
+from .config import IB_HOST, IB_PORT, RETRAIN_FREQUENCY, IB_CLIENT_ID
 from .database import engine
 from Scripts.data_fetch import fetch_and_load_symbols, fetch_historical_data, insert_historical_data
 from .modeling import load_existing_model, retrain_model
@@ -12,17 +15,20 @@ from .trade import on_bar
 from .utils import is_market_open
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 
 model = None  # Global model object
+ib = IB()     # Global IB instance
+eastern = ZoneInfo("America/New_York")
+
 
 
 def initialize_bot():
     """Fetch symbols, load data, and prepare the model."""
     logging.info("Fetching and loading symbols from API...")
-    symbols = fetch_and_load_symbols()  # Fetch and load S&P 500 symbols and data
+    symbols = fetch_and_load_symbols(ib)  # Fetch and load S&P 500 symbols and data
 
     if not symbols:
         logging.error("No symbols fetched. Cannot proceed.")
@@ -62,54 +68,148 @@ def scheduled_retrain():
 
 def setup_scheduler():
     scheduler = BackgroundScheduler()
-    # Retrain model every X minutes (defined in config.RETRAIN_FREQUENCY)
     scheduler.add_job(scheduled_retrain, 'interval', minutes=RETRAIN_FREQUENCY)
     scheduler.start()
     logging.info("Scheduler started for periodic retraining.")
     atexit.register(lambda: scheduler.shutdown())
 
-
 def start_stream(symbols):
-    """
-    Starts the Alpaca data stream for the given symbols. 
-    Attaches 'on_bar' callback to each symbol's bar updates.
-    """
-    global model
+    global model, ib
 
-    # Use 'iex' data_feed unless your plan has 'sip' 
-    stream = Stream(
-        APCA_API_KEY_ID,
-        APCA_API_SECRET_KEY,
-        base_url="https://stream.data.alpaca.markets",
-        data_feed='iex'
-    )
+    logging.info("Connecting to IBKR...")
+    ib.connect(IB_HOST, IB_PORT, clientId=1)
 
-    for symbol in symbols:
-        @stream.on_bar(symbol)
-        async def bar_callback(bar, symbol=symbol):
+    for symbol_obj in symbols:
+        # 🌟 Sanitize the symbol extraction properly
+        if isinstance(symbol_obj, str):
+            symbol = symbol_obj
+        elif isinstance(symbol_obj, tuple) and len(symbol_obj) == 1:
+            symbol = symbol_obj[0]  # ('AAPL',) → 'AAPL'
+        elif hasattr(symbol_obj, "symbol"):
+            symbol = symbol_obj.symbol
+        else:
+            logging.warning(f"Unexpected symbol format: {symbol_obj}")
+            continue
+
+        contract = Stock(symbol, 'SMART', 'USD')
+        try:
+            qualified = ib.qualifyContracts(contract)
+            if not qualified:
+                logging.warning(f"[{symbol}] Contract could not be qualified. Skipping.")
+                continue
+        except Exception as e:
+            logging.error(f"[{symbol}] Contract qualification failed: {e}")
+            continue
+
+        def bar_handler(bar_list, symbol=symbol):
             global model
-            model = on_bar(bar, model)
+            if not bar_list:
+                return
+            latest_bar = bar_list[-1]
+            setattr(latest_bar, "symbol", symbol)
+            model = on_bar(latest_bar, model)
 
-    logging.info("Starting data stream...")
-    try:
-        stream.run()
-    except KeyboardInterrupt:
-        logging.info("Stream stopped by user.")
-    except Exception as e:
-        logging.error(f"An error occurred during streaming: {e}")
+        bars = ib.reqRealTimeBars(
+    contract=contract,
+    barSize=5,
+    whatToShow='TRADES',
+    useRTH=True,
+    realTimeBarsOptions=[]
+)
+
+        bars.updateEvent += bar_handler
+        logging.info(f"[{symbol}] Subscribed to real-time bars.")
+
+    logging.info("Real-time streaming setup completed.")
+
+
+
+
+
+
+
+
+from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
+
+def start_streaming_realtime_bars(ib, symbols):
+    logging.info("Switching to delayed-frozen market data (no subscriptions needed)…")
+    ib.reqMarketDataType(4)  # 4 = delayed-frozen feed
+
+    logging.info("Subscribing to (delayed-frozen) real-time bar streams for each symbol...")
+    for symbol_obj in symbols:
+        # 💡 Clean and extract the symbol safely
+        if isinstance(symbol_obj, str):
+            symbol = symbol_obj
+        elif isinstance(symbol_obj, tuple) and len(symbol_obj) == 1:
+            symbol = symbol_obj[0]
+        elif hasattr(symbol_obj, 'symbol'):
+            symbol = symbol_obj.symbol
+        else:
+            logging.warning(f"Unrecognized symbol format: {symbol_obj} — skipping.")
+            continue
+
+        contract = Stock(symbol, 'SMART', 'USD')
+
+        try:
+            qualified = ib.qualifyContracts(contract)
+            if not qualified:
+                logging.warning(f"[{symbol}] Contract could not be qualified. Skipping.")
+                continue
+
+            # ✅ Define the bar handler inside the loop and capture symbol correctly
+            def bar_handler(bars, sym=symbol):
+                global model
+                if not bars:
+                    return
+                latest_bar = bars[-1]
+                setattr(latest_bar, "symbol", sym)
+                logging.debug(f"[{sym}] Bar at {latest_bar.time} (delayed)")
+                model = on_bar(latest_bar, model)
+
+            # request bars exactly as before—now they'll be delayed-frozen
+            bars = ib.reqRealTimeBars(
+                contract=contract,
+                barSize=5,
+                whatToShow='TRADES',
+                useRTH=True,
+                realTimeBarsOptions=[]
+            )
+            bars.updateEvent += bar_handler
+
+            logging.info(f"[{symbol}] Subscribed to delayed-frozen real-time bars.")
+        except Exception as e:
+            logging.error(f"[{symbol}] Failed to subscribe: {e}", exc_info=True)
+
+    logging.info("Delayed-frozen streaming setup completed.")
+
+
+
 
 
 def main():
-    logging.info("Initializing bot...")
-    symbols = initialize_bot()  # Initialize bot and get symbols
+    logging.info("Connecting to IBKR...")
+    ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID)
+    ib.reqMarketDataType(4)
 
+    symbols = initialize_bot()
     if not symbols:
-        logging.error("Initialization failed. Exiting.")
+        logging.error("No symbols found. Exiting.")
         return
 
-    setup_scheduler()  # Setup periodic retraining scheduler
-    logging.info("Starting data stream for fetched symbols...")
-    start_stream(symbols)  # Start streaming data for the fetched symbols
+    setup_scheduler()
+    start_streaming_realtime_bars(ib, symbols)  # 🔄 LIVE streaming now
+
+    logging.info("Starting IB event loop...")
+    try:
+        ib.run()
+    except KeyboardInterrupt:
+        logging.info("Shutting down from keyboard interrupt...")
+    finally:
+        ib.disconnect()
+        logging.info("Disconnected from IBKR. Goodbye.")
+
+
 
 
 if __name__ == "__main__":

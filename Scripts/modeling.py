@@ -18,7 +18,7 @@ from .database import get_session, StockData
 from .utils import XGBClassifierWrapper, LGBMClassifierWrapper
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 
@@ -86,7 +86,7 @@ def train_model(X: pd.DataFrame, y: pd.Series):
         search = RandomizedSearchCV(
             estimator=ensemble,
             param_distributions=param_distributions,
-            n_iter=20,               # more search iterations
+            n_iter=10,               # more search iterations
             scoring=scoring,
             cv=tscv,                 # time-series CV
             n_jobs=-1,
@@ -122,7 +122,7 @@ def train_model(X: pd.DataFrame, y: pd.Series):
             X_train,
             y_train,
             eval_set=[(X_val, y_val)],
-            early_stopping_rounds=10,
+            early_stopping_rounds=5,
             eval_metric='logloss',
             verbose=False
         )
@@ -131,7 +131,7 @@ def train_model(X: pd.DataFrame, y: pd.Series):
             X_train,
             y_train,
             eval_set=[(X_val, y_val)],
-            early_stopping_rounds=10,
+            early_stopping_rounds=5,
             eval_metric='logloss',
             verbose=False
         )
@@ -184,8 +184,10 @@ def retrain_model():
     """
     from .database import get_session, StockData
 
+    # Retrieve distinct symbols and convert to a list of clean strings.
     with get_session() as session:
-        symbols = [row[0] for row in session.query(StockData.symbol).distinct().all()]
+        symbol_tuples = session.query(StockData.symbol).distinct().all()
+        symbols = [str(row[0]).upper().strip() for row in symbol_tuples if row and row[0]]
 
     if not symbols:
         logging.info("No symbols found in DB to train the model.")
@@ -193,6 +195,7 @@ def retrain_model():
 
     combined = []
     for sym in symbols:
+        # Use the sanitized symbol (which is now a proper string) for queries.
         with get_session() as session:
             records = (
                 session.query(StockData)
@@ -200,10 +203,12 @@ def retrain_model():
                 .order_by(StockData.timestamp.asc())
                 .all()
             )
-        if not records or len(records) < 1:
+
+        if not records:
             logging.info(f"Insufficient data for {sym}. Skipping.")
             continue
 
+        # Build DataFrame from the records
         data = pd.DataFrame([{
             'open': r.open,
             'high': r.high,
@@ -214,14 +219,13 @@ def retrain_model():
         } for r in records])
         data.sort_values('timestamp', inplace=True)
 
+        # Process technical indicators
         data = compute_technical_indicators(data)
-        # Optionally fill or drop NaN
-        data.dropna(inplace=True)
-
         if data.empty:
             logging.info(f"Insufficient processed data for {sym}. Skipping.")
             continue
 
+        # Attach the clean symbol to the DataFrame
         data['symbol'] = sym
         combined.append(data)
 
@@ -230,7 +234,6 @@ def retrain_model():
         return None
 
     combined_df = pd.concat(combined)
-    combined_df.dropna(inplace=True)
 
     X, y = prepare_features(combined_df)
     if X.empty or y.empty:
@@ -240,3 +243,4 @@ def retrain_model():
     logging.info(f"Training data shape: X={X.shape}, y={y.shape}")
     new_model = train_model(X, y)
     return new_model
+

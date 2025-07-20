@@ -1,16 +1,21 @@
 import logging
 from contextlib import contextmanager
-from sqlalchemy import create_engine, Column, Integer, String, Float, BigInteger, TIMESTAMP, UniqueConstraint
+from sqlalchemy import (
+    create_engine, Column, Integer, String, Float, BigInteger,
+    TIMESTAMP, UniqueConstraint
+)
 from sqlalchemy.orm import sessionmaker, scoped_session, declarative_base
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+# Import credentials/config
 from .config import DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
 
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 
@@ -22,6 +27,10 @@ try:
 except Exception as e:
     logging.error(f"Failed to connect to the database: {e}")
     raise
+
+# -----------------------
+# ORM Base and Models
+# -----------------------
 
 Base = declarative_base()
 
@@ -41,9 +50,20 @@ class StockData(Base):
         UniqueConstraint('symbol', 'timestamp', name='_symbol_timestamp_uc'),
     )
 
+class Portfolio(Base):
+    __tablename__ = 'portfolio'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(10), nullable=False)
+    shares = Column(Float, nullable=False, default=0.0)
+    cost_basis = Column(Float, nullable=False, default=0.0)
+
 Base.metadata.create_all(engine)
 logging.info("Database tables created or verified successfully.")
 
+# -----------------------
+# Session Management
+# -----------------------
 
 @contextmanager
 def get_session():
@@ -58,71 +78,95 @@ def get_session():
     finally:
         session.close()
 
+# -----------------------
+# Insert Single Bar
+# -----------------------
 
 def insert_stock_data(symbol, bar):
-    """Inserts a single bar/row into the database."""
-    from pandas import to_datetime  # local import to avoid circular dependencies
-    try:
-        timestamp_converted = None
-        if isinstance(bar.timestamp, (int, float)):
-            timestamp_converted = to_datetime(bar.timestamp, unit='ns')
-        elif isinstance(bar.timestamp, str):
-            timestamp_converted = to_datetime(bar.timestamp)
-        else:
-            timestamp_converted = bar.timestamp
+    from pandas import to_datetime
 
+    try:
+        # Defensive symbol conversion
+        if isinstance(symbol, bool):
+            logging.error(f"Symbol value is boolean ({symbol}) — skipping insert.")
+            return
+        symbol = str(symbol).upper().strip()
+
+        # Resolve timestamp
+        ts = getattr(bar, "timestamp", getattr(bar, "time", None))
+        if ts is None:
+            raise ValueError("Bar object has no recognizable timestamp.")
+
+        if isinstance(ts, (int, float)):
+            timestamp_converted = to_datetime(ts, unit='ns')
+        elif isinstance(ts, str):
+            timestamp_converted = to_datetime(ts)
+        else:
+            timestamp_converted = ts
+
+        # Get open (some bars use open_, like RealTimeBar)
+        open_value = getattr(bar, 'open', getattr(bar, 'open_', None))
+
+        # Defensive insert
         record = StockData(
             symbol=symbol,
             timestamp=timestamp_converted,
-            open=bar.open,
-            high=bar.high,
-            low=bar.low,
-            close=bar.close,
-            volume=bar.volume
+            open=open_value,
+            high=getattr(bar, 'high', None),
+            low=getattr(bar, 'low', None),
+            close=getattr(bar, 'close', None),
+            volume=getattr(bar, 'volume', None)
         )
 
         with get_session() as session:
             session.add(record)
 
         logging.info(f"Inserted data for {symbol} at {timestamp_converted}.")
+
     except IntegrityError:
         logging.info(f"Duplicate entry for {symbol} at {timestamp_converted}. Skipping insert.")
     except Exception as e:
         logging.error(f"Error inserting data for {symbol}: {e}")
 
+# -----------------------
+# Insert Bulk Historical Data
+# -----------------------
 
 def insert_historical_data(symbol, data_df):
-    """Bulk inserts historical DataFrame into the database."""
     import pandas as pd
 
-    if data_df.empty:
-        logging.info(f"No historical data to insert for {symbol}.")
-        return
     try:
+        if isinstance(symbol, bool):
+            logging.error(f"Symbol value is boolean ({symbol}) — skipping historical insert.")
+            return
+        symbol = str(symbol).upper().strip()
+
+        if data_df.empty:
+            logging.info(f"No historical data to insert for {symbol}.")
+            return
+
         records = []
         for _, row in data_df.iterrows():
-            timestamp_converted = pd.to_datetime(row['timestamp'])
-            op = row.get('open', None)
-            hi = row.get('high', None)
-            lo = row.get('low', None)
-            cl = row.get('close', None)
-            vol = row.get('volume', None)
-
-            r = StockData(
-                symbol=symbol,
-                timestamp=timestamp_converted,
-                open=op,
-                high=hi,
-                low=lo,
-                close=cl,
-                volume=vol
-            )
-            records.append(r)
+            try:
+                timestamp_converted = pd.to_datetime(row['timestamp'])
+                records.append({
+                    'symbol': symbol,
+                    'timestamp': timestamp_converted,
+                    'open': row.get('open'),
+                    'high': row.get('high'),
+                    'low': row.get('low'),
+                    'close': row.get('close'),
+                    'volume': row.get('volume')
+                })
+            except Exception as e:
+                logging.warning(f"Skipping bad row: {e}")
 
         with get_session() as session:
-            session.bulk_save_objects(records)
-        logging.info(f"Inserted {len(records)} historical records for {symbol} into the database.")
-    except IntegrityError:
-        logging.info(f"Duplicate entries for {symbol}. Skipping duplicates.")
+            stmt = pg_insert(StockData).values(records)
+            stmt = stmt.on_conflict_do_nothing(index_elements=['symbol', 'timestamp'])
+            session.execute(stmt)
+
+        logging.info(f"Upserted {len(records)} historical records for {symbol} into the database.")
+
     except Exception as e:
         logging.error(f"Error inserting historical data for {symbol}: {e}")

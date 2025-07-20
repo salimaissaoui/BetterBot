@@ -1,39 +1,40 @@
 import os
 
-# ======================== CONFIG & CONSTANTS ===========================
-APCA_API_KEY_ID = os.getenv("APCA_API_KEY_ID", "PK023FOQLSDB6VR3UDRV")
-APCA_API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY", "2CalVxgSuOnObttDwgBRcpQAbBMTXR4XkBa7qXdR")
-APCA_API_BASE_URL = "https://paper-api.alpaca.markets"
+# ======================== IBKR CONFIG ===========================
+# IBKR doesn't use API keys. It connects via host, port, and client ID.
+IB_HOST = os.getenv("IB_HOST", "127.0.0.1")           # Localhost (TWS or IB Gateway)
+IB_PORT = int(os.getenv("IB_PORT", "7497"))           # 7497 = TWS paper/live, 4002 = IB Gateway paper
+IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))    # Arbitrary unique client ID per app instance
+IB_CLIENT_ID_TRADE = int(os.getenv("IB_CLIENT_ID_TRADE", "2"))
+IB_CLIENT_ID_DATA = int(os.getenv("IB_CLIENT_ID_DATA", "3"))
 
+# ======================== DATABASE CONFIG ========================
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "Stocks123")
 DB_HOST = os.getenv("DB_HOST", "database-2.ctwgq2kqgrl6.us-east-2.rds.amazonaws.com")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "postgres")
 
-# ------------------- Trading & Modeling Parameters ---------------------
+# =================== Trading & Modeling Parameters ===================
 ATR_WINDOW = 14
-NOTIONAL = 5000           # Amount in dollars to spend on each trade
-MODEL_LOOKBACK = 50       # How many data points back you use to train or generate features
-FEATURE_LAGS = 2          # How many lagged returns or indicator values to include as features
-SHORT_MA = 9              # Typical short moving average period
-LONG_MA = 21              # Typical long moving average period
-RSI_PERIOD = 14           # Classic RSI period
-RETRAIN_FREQUENCY = 5
-DOJI_THRESHOLD = 0.001     # in minutes (e.g., retrain every 5 minutes)
+NOTIONAL = 10           # Amount in dollars to spend on each trade
+MODEL_LOOKBACK = 50       # Historical data window for features
+FEATURE_LAGS = 2          # Lag features for model input
+SHORT_MA = 9              # Short moving average
+LONG_MA = 21              # Long moving average
+RSI_PERIOD = 14           # RSI calculation period
+RETRAIN_FREQUENCY = 20     # Retrain model every N minutes
+DOJI_THRESHOLD = 0.001    # Doji pattern threshold
 
-# ------------------- Extended Range --------------------------
-# We fetch data further back in time to train on more historical data.
-START_DATE = "2010-01-01"  # Was "2015-01-01" previously
-STOP_LOSS_PCT = 0.02       # 2% stop-loss as an example
+# =================== Historical Data Range ===================
+START_DATE = "2005-01-01"
+STOP_LOSS_PCT = 0.02      # 2% stop loss
 
-# Label the target as "up" only if future_return >= TARGET_THRESHOLD
-TARGET_THRESHOLD = 0.003   # 0.3% threshold, adjust as needed
+TARGET_THRESHOLD = 0.003  # 0.3% upward move as target label
 
-# ------------------- Market Hours & Timezone --------------------------
+# =================== Market Hours & Timezone ===================
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 17
 MARKET_CLOSE_MINUTE = 0
-
 TIMEZONE_NAME = "US/Eastern"
