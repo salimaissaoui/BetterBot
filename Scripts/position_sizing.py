@@ -10,7 +10,7 @@ import traceback
 from .database import get_session, StockData
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 

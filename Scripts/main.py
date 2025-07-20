@@ -10,11 +10,12 @@ from .config import IB_HOST, IB_PORT, RETRAIN_FREQUENCY, IB_CLIENT_ID
 from .database import engine
 from Scripts.data_fetch import fetch_and_load_symbols, fetch_historical_data, insert_historical_data
 from .modeling import load_existing_model, retrain_model
-from .trade import on_bar
+from .trade import on_bar, initialize_advanced_model
 from .utils import is_market_open
+from .model_performance import log_portfolio_performance, setup_ab_testing
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 
@@ -46,6 +47,27 @@ def initialize_bot():
             logging.info("Initial model training failed or insufficient data.")
     else:
         logging.info("Using loaded model from previous run.")
+    
+    # Initialize advanced model system
+    logging.info("Initializing advanced model system...")
+    advanced_success = initialize_advanced_model()
+    if advanced_success:
+        logging.info("Advanced model system initialized successfully")
+        
+        # Setup A/B testing if we have both basic and advanced models
+        if model is not None:
+            models = {
+                'basic_model': model,
+                'advanced_model': 'advanced'  # Placeholder - actual model is in trade.py
+            }
+            allocations = {
+                'basic_model': 30.0,  # 30% allocation to basic model
+                'advanced_model': 70.0  # 70% allocation to advanced model
+            }
+            setup_ab_testing(models, allocations)
+            logging.info("A/B testing setup completed")
+    else:
+        logging.warning("Advanced model initialization failed. Using basic model only.")
 
     return symbols
 
@@ -83,6 +105,7 @@ def setup_scheduler():
 def trading_loop():
     """
     Main trading loop: fetch data -> run AI predictions -> place orders -> repeat
+    Enhanced with portfolio tracking and performance monitoring
     """
     global model, polling_symbols
     
@@ -91,6 +114,37 @@ def trading_loop():
         return
     
     logging.info(f"Starting trading cycle for {len(polling_symbols)} symbols...")
+    
+    # Track portfolio performance
+    try:
+        account_summary = ib.accountSummary()
+        portfolio_value = 0
+        available_funds = 0
+        
+        for item in account_summary:
+            if item.tag == 'NetLiquidation':
+                portfolio_value = float(item.value)
+            elif item.tag == 'AvailableFunds':
+                available_funds = float(item.value)
+        
+        # Get current positions
+        positions = ib.positions()
+        position_count = len(positions)
+        total_position_value = sum(abs(pos.position * pos.avgCost) for pos in positions)
+        
+        # Log portfolio snapshot
+        log_portfolio_performance({
+            'total_value': portfolio_value,
+            'available_funds': available_funds,
+            'position_count': position_count,
+            'position_value': total_position_value,
+            'cash_percentage': available_funds / portfolio_value if portfolio_value > 0 else 1.0
+        })
+        
+        logging.info(f"Portfolio: ${portfolio_value:,.2f} total, ${available_funds:,.2f} available, {position_count} positions")
+        
+    except Exception as portfolio_error:
+        logging.warning(f"Error tracking portfolio: {portfolio_error}")
     
     for symbol in polling_symbols[:5]:  # Process 5 symbols per cycle
         try:

@@ -93,7 +93,7 @@ def fetch_historical_data(ib: IB, symbol: str, start_date: str = START_DATE, end
     return pd.DataFrame()
 
 
-def fetch_and_load_symbols(ib: IB, csv_path="sp500.csv", limit=10) -> list:
+def fetch_and_load_symbols(ib: IB, csv_path="sp500.csv", limit=None) -> list:
     all_symbols = fetch_sp500_symbols_from_csv(csv_path)
     chosen_symbols = all_symbols[:limit]
     if not chosen_symbols:
