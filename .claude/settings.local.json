@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(\"/mnt/c/Users/Palim/Downloads/AI model/BetterBot/.venv/Scripts/python.exe\" -m Scripts.main)",
+      "Bash(timeout:*)",
+      "Bash(\"/mnt/c/Users/Palim/Downloads/AI model/BetterBot/.venv/Scripts/pip.exe\" install scikit-learn)",
+      "Bash(rm:*)"
+    ],
+    "deny": []
+  }
+}

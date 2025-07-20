@@ -18,7 +18,7 @@ from .database import get_session, StockData
 from .utils import XGBClassifierWrapper, LGBMClassifierWrapper
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 

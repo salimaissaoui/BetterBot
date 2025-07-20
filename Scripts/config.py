@@ -17,7 +17,7 @@ DB_NAME = os.getenv("DB_NAME", "postgres")
 
 # =================== Trading & Modeling Parameters ===================
 ATR_WINDOW = 14
-NOTIONAL = 10           # Amount in dollars to spend on each trade
+NOTIONAL = 100          # Amount in dollars to spend on each trade
 MODEL_LOOKBACK = 50       # Historical data window for features
 FEATURE_LAGS = 2          # Lag features for model input
 SHORT_MA = 9              # Short moving average
@@ -38,3 +38,6 @@ MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 17
 MARKET_CLOSE_MINUTE = 0
 TIMEZONE_NAME = "US/Eastern"
+
+# =================== Trading Settings ===================
+ALLOW_AFTER_HOURS_TRADING = True  # Allow trading when market is closed

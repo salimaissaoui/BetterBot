@@ -6,7 +6,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from ib_insync import IB, util, Stock
 from zoneinfo import ZoneInfo
 
-
 from .config import IB_HOST, IB_PORT, RETRAIN_FREQUENCY, IB_CLIENT_ID
 from .database import engine
 from Scripts.data_fetch import fetch_and_load_symbols, fetch_historical_data, insert_historical_data
@@ -15,14 +14,14 @@ from .trade import on_bar
 from .utils import is_market_open
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s:%(levelname)s:%(message)s'
 )
 
 model = None  # Global model object
 ib = IB()     # Global IB instance
 eastern = ZoneInfo("America/New_York")
-
+polling_symbols = []  # Symbols for historical data polling
 
 
 def initialize_bot():
@@ -52,10 +51,17 @@ def initialize_bot():
 
 
 def scheduled_retrain():
-    """Retrains the model periodically outside market hours."""
+    """Retrains the model periodically."""
     global model
-    if not is_market_open():
-        logging.info("Market is closed. Scheduled retraining started...")
+    from .config import ALLOW_AFTER_HOURS_TRADING
+    
+    # If after-hours trading is enabled, retrain regardless of market hours
+    if ALLOW_AFTER_HOURS_TRADING or not is_market_open():
+        if ALLOW_AFTER_HOURS_TRADING:
+            logging.info("After-hours trading enabled. Scheduled retraining started...")
+        else:
+            logging.info("Market is closed. Scheduled retraining started...")
+            
         new_model = retrain_model()
         if new_model is not None:
             model = new_model
@@ -63,153 +69,128 @@ def scheduled_retrain():
         else:
             logging.info("Scheduled retraining had no new model.")
     else:
-        logging.info("Market is open. Skipping scheduled retraining.")
+        logging.info("Market is open and after-hours trading disabled. Skipping scheduled retraining.")
 
 
 def setup_scheduler():
     scheduler = BackgroundScheduler()
     scheduler.add_job(scheduled_retrain, 'interval', minutes=RETRAIN_FREQUENCY)
     scheduler.start()
-    logging.info("Scheduler started for periodic retraining.")
+    logging.info("Scheduler started for background model training.")
     atexit.register(lambda: scheduler.shutdown())
 
-def start_stream(symbols):
-    global model, ib
 
-    logging.info("Connecting to IBKR...")
-    ib.connect(IB_HOST, IB_PORT, clientId=1)
-
-    for symbol_obj in symbols:
-        # 🌟 Sanitize the symbol extraction properly
-        if isinstance(symbol_obj, str):
-            symbol = symbol_obj
-        elif isinstance(symbol_obj, tuple) and len(symbol_obj) == 1:
-            symbol = symbol_obj[0]  # ('AAPL',) → 'AAPL'
-        elif hasattr(symbol_obj, "symbol"):
-            symbol = symbol_obj.symbol
-        else:
-            logging.warning(f"Unexpected symbol format: {symbol_obj}")
-            continue
-
-        contract = Stock(symbol, 'SMART', 'USD')
+def trading_loop():
+    """
+    Main trading loop: fetch data -> run AI predictions -> place orders -> repeat
+    """
+    global model, polling_symbols
+    
+    if not polling_symbols:
+        logging.warning("No symbols to trade. Skipping trading cycle.")
+        return
+    
+    logging.info(f"Starting trading cycle for {len(polling_symbols)} symbols...")
+    
+    for symbol in polling_symbols[:5]:  # Process 5 symbols per cycle
         try:
-            qualified = ib.qualifyContracts(contract)
-            if not qualified:
-                logging.warning(f"[{symbol}] Contract could not be qualified. Skipping.")
-                continue
-        except Exception as e:
-            logging.error(f"[{symbol}] Contract qualification failed: {e}")
-            continue
-
-        def bar_handler(bar_list, symbol=symbol):
-            global model
-            if not bar_list:
-                return
-            latest_bar = bar_list[-1]
-            setattr(latest_bar, "symbol", symbol)
-            model = on_bar(latest_bar, model)
-
-        bars = ib.reqRealTimeBars(
-    contract=contract,
-    barSize=5,
-    whatToShow='TRADES',
-    useRTH=True,
-    realTimeBarsOptions=[]
-)
-
-        bars.updateEvent += bar_handler
-        logging.info(f"[{symbol}] Subscribed to real-time bars.")
-
-    logging.info("Real-time streaming setup completed.")
-
-
-
-
-
-
-
-
-from zoneinfo import ZoneInfo
-from datetime import datetime, timedelta
-
-def start_streaming_realtime_bars(ib, symbols):
-    logging.info("Switching to delayed-frozen market data (no subscriptions needed)…")
-    ib.reqMarketDataType(4)  # 4 = delayed-frozen feed
-
-    logging.info("Subscribing to (delayed-frozen) real-time bar streams for each symbol...")
-    for symbol_obj in symbols:
-        # 💡 Clean and extract the symbol safely
-        if isinstance(symbol_obj, str):
-            symbol = symbol_obj
-        elif isinstance(symbol_obj, tuple) and len(symbol_obj) == 1:
-            symbol = symbol_obj[0]
-        elif hasattr(symbol_obj, 'symbol'):
-            symbol = symbol_obj.symbol
-        else:
-            logging.warning(f"Unrecognized symbol format: {symbol_obj} — skipping.")
-            continue
-
-        contract = Stock(symbol, 'SMART', 'USD')
-
-        try:
-            qualified = ib.qualifyContracts(contract)
-            if not qualified:
-                logging.warning(f"[{symbol}] Contract could not be qualified. Skipping.")
-                continue
-
-            # ✅ Define the bar handler inside the loop and capture symbol correctly
-            def bar_handler(bars, sym=symbol):
-                global model
-                if not bars:
-                    return
+            logging.info(f"Processing {symbol}...")
+            
+            # Step 1: Fetch recent delayed data
+            contract = Stock(symbol, 'SMART', 'USD')
+            
+            try:
+                # Request historical data with delayed feed
+                bars = ib.reqHistoricalData(
+                    contract,
+                    endDateTime='',
+                    durationStr='2 D',  # Last 2 days of data
+                    barSizeSetting='5 mins',
+                    whatToShow='TRADES',
+                    useRTH=False,  # Include extended hours
+                    formatDate=1
+                )
+                
+                if not bars or len(bars) == 0:
+                    logging.warning(f"No delayed data received for {symbol}")
+                    continue
+                
+                # Get the latest bar
                 latest_bar = bars[-1]
-                setattr(latest_bar, "symbol", sym)
-                logging.debug(f"[{sym}] Bar at {latest_bar.time} (delayed)")
+                setattr(latest_bar, "symbol", symbol)
+                
+                logging.debug(f"Got delayed data for {symbol}: {latest_bar.close}")
+                
+            except Exception as data_error:
+                logging.warning(f"Data request error for {symbol}: {data_error}")
+                continue
+            
+            # Step 2: Process the latest bar with AI
+            if model is not None:
                 model = on_bar(latest_bar, model)
-
-            # request bars exactly as before—now they'll be delayed-frozen
-            bars = ib.reqRealTimeBars(
-                contract=contract,
-                barSize=5,
-                whatToShow='TRADES',
-                useRTH=True,
-                realTimeBarsOptions=[]
-            )
-            bars.updateEvent += bar_handler
-
-            logging.info(f"[{symbol}] Subscribed to delayed-frozen real-time bars.")
+            else:
+                logging.warning("No model available for predictions")
+                
         except Exception as e:
-            logging.error(f"[{symbol}] Failed to subscribe: {e}", exc_info=True)
-
-    logging.info("Delayed-frozen streaming setup completed.")
-
-
-
+            logging.error(f"Error in trading cycle for {symbol}: {e}")
+    
+    # Rotate symbols for next cycle
+    if len(polling_symbols) > 5:
+        polling_symbols = polling_symbols[5:] + polling_symbols[:5]
+    
+    logging.info("Trading cycle completed.")
 
 
 def main():
+    global model, polling_symbols
+    
+    logging.info("Starting AI Trading Bot...")
     logging.info("Connecting to IBKR...")
     ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID)
-    ib.reqMarketDataType(4)
+    
+    # Request delayed market data (no subscription needed)
+    ib.reqMarketDataType(3)  # 3 = delayed data
+    logging.info("Enabled delayed market data")
 
+    # Initialize: fetch symbols and load/train model
     symbols = initialize_bot()
     if not symbols:
         logging.error("No symbols found. Exiting.")
         return
 
-    setup_scheduler()
-    start_streaming_realtime_bars(ib, symbols)  # 🔄 LIVE streaming now
+    # Set up symbols for trading
+    polling_symbols = []
+    for symbol_obj in symbols:
+        if isinstance(symbol_obj, str):
+            symbol = symbol_obj
+        elif isinstance(symbol_obj, tuple) and len(symbol_obj) == 1:
+            symbol = symbol_obj[0]
+        else:
+            continue
+        polling_symbols.append(symbol)
+    
+    logging.info(f"Loaded {len(polling_symbols)} symbols for trading")
 
-    logging.info("Starting IB event loop...")
+    # Start background model training
+    setup_scheduler()
+    
+    logging.info("Starting main trading loop...")
+    logging.info("Press Ctrl+C to stop the bot")
+    
     try:
-        ib.run()
+        # Main trading loop
+        while True:
+            # Execute one trading cycle
+            trading_loop()
+            
+            # Wait before next cycle (30 seconds)
+            ib.sleep(30)
+            
     except KeyboardInterrupt:
         logging.info("Shutting down from keyboard interrupt...")
     finally:
         ib.disconnect()
         logging.info("Disconnected from IBKR. Goodbye.")
-
-
 
 
 if __name__ == "__main__":
