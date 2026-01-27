@@ -140,21 +140,26 @@ def submit_notional_order_with_stop_loss(symbol, side, notional, stop_loss_pct):
 
 def execute_trade(pred_results, model):
     global active_positions
-    
+
     # Check if trading is allowed when market is closed
     if not is_market_open() and not ALLOW_AFTER_HOURS_TRADING:
         logging.info("Market is closed and after-hours trading is disabled. Skipping trade execution.")
         return
     elif not is_market_open() and ALLOW_AFTER_HOURS_TRADING:
         logging.info("Market is closed but after-hours trading is enabled. Proceeding with trades.")
-    
-    # Adaptive thresholds based on recent performance
-    BUY_THRESHOLD = 0.51
-    SELL_THRESHOLD = 0.49
-    SHORT_THRESHOLD = 0.49
-    COVER_THRESHOLD = 0.51
+
+    # Default thresholds
+    DEFAULT_BUY_THRESHOLD = 0.51
+    DEFAULT_SELL_THRESHOLD = 0.49
+    DEFAULT_SHORT_THRESHOLD = 0.49
+    DEFAULT_COVER_THRESHOLD = 0.51
 
     for symbol, prob in pred_results:
+        # Reset thresholds to defaults for each symbol
+        BUY_THRESHOLD = DEFAULT_BUY_THRESHOLD
+        SELL_THRESHOLD = DEFAULT_SELL_THRESHOLD
+        SHORT_THRESHOLD = DEFAULT_SHORT_THRESHOLD
+        COVER_THRESHOLD = DEFAULT_COVER_THRESHOLD
         logging.info(f"Symbol: {symbol}, Probability: {prob:.2f}")
 
         indicators = latest_indicators_dict.get(symbol, {})
@@ -213,7 +218,8 @@ def execute_trade(pred_results, model):
                     ib.sleep(1)  # Wait for price update
                     entry_price = ticker.last if ticker.last and ticker.last > 0 else ticker.close
                     ib.cancelMktData(contract)
-                except:
+                except Exception as e:
+                    logging.warning(f"Error getting market data for {symbol}: {e}")
                     entry_price = None
                 
                 # Use ML position sizing for buy orders
@@ -237,7 +243,7 @@ def execute_trade(pred_results, model):
 
         elif want_to_sell:
             logging.info(f"Selling {symbol}: prob={prob:.2f}")
-            
+
             # Get exit price and calculate PnL
             try:
                 contract = Stock(symbol, 'SMART', 'USD')
@@ -245,11 +251,12 @@ def execute_trade(pred_results, model):
                 ib.sleep(1)
                 exit_price = ticker.last if ticker.last and ticker.last > 0 else ticker.close
                 ib.cancelMktData(contract)
-            except:
+            except Exception as e:
+                logging.warning(f"Error getting market data for {symbol}: {e}")
                 exit_price = None
-                
+
             close_position(symbol)
-            
+
             # Log completed trade
             if symbol in active_positions:
                 log_trade_performance({
@@ -259,8 +266,7 @@ def execute_trade(pred_results, model):
                     'exit_time': datetime.now(),
                     'position_type': 'long'
                 })
-                
-            del active_positions[symbol]
+                del active_positions[symbol]
             trade_executed = True
 
         elif want_to_short:
@@ -274,9 +280,10 @@ def execute_trade(pred_results, model):
                     ib.sleep(1)
                     entry_price = ticker.last if ticker.last and ticker.last > 0 else ticker.close
                     ib.cancelMktData(contract)
-                except:
+                except Exception as e:
+                    logging.warning(f"Error getting market data for {symbol}: {e}")
                     entry_price = None
-                
+
                 # Use ML position sizing for short orders
                 qty = submit_ml_sized_order(symbol, 'sell', 1.0 - prob, entry_price)  # Invert confidence for shorting
                 if qty > 0:
@@ -298,7 +305,7 @@ def execute_trade(pred_results, model):
 
         elif want_to_cover:
             logging.info(f"Covering short for {symbol}: prob={prob:.2f}")
-            
+
             # Get exit price
             try:
                 contract = Stock(symbol, 'SMART', 'USD')
@@ -306,11 +313,12 @@ def execute_trade(pred_results, model):
                 ib.sleep(1)
                 exit_price = ticker.last if ticker.last and ticker.last > 0 else ticker.close
                 ib.cancelMktData(contract)
-            except:
+            except Exception as e:
+                logging.warning(f"Error getting market data for {symbol}: {e}")
                 exit_price = None
-                
+
             close_position(symbol)
-            
+
             # Log completed trade
             if symbol in active_positions:
                 log_trade_performance({
@@ -320,8 +328,7 @@ def execute_trade(pred_results, model):
                     'exit_time': datetime.now(),
                     'position_type': 'short'
                 })
-                
-            del active_positions[symbol]
+                del active_positions[symbol]
             trade_executed = True
 
         else:

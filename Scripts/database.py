@@ -85,6 +85,7 @@ def get_session():
 def insert_stock_data(symbol, bar):
     from pandas import to_datetime
 
+    timestamp_converted = None  # Initialize before try block
     try:
         # Defensive symbol conversion
         if isinstance(symbol, bool):

@@ -104,7 +104,7 @@ class MarketRegimeDetector:
         features['support_strength'] = self._calculate_support_resistance(data, 'support')
         features['resistance_strength'] = self._calculate_support_resistance(data, 'resistance')
         
-        return features.fillna(method='ffill').fillna(0)
+        return features.ffill().fillna(0)
     
     def _calculate_support_resistance(self, data: pd.DataFrame, level_type: str) -> pd.Series:
         """Calculate support/resistance strength"""
@@ -469,9 +469,9 @@ class AdvancedFeatureEngineering:
     
     def _add_temporal_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Add time-based features"""
-        
+
         if 'timestamp' in data.columns:
-            data['timestamp'] = pd.to_datetime(data['timestamp'])
+            data['timestamp'] = pd.to_datetime(data['timestamp'], utc=True).dt.tz_localize(None)
             
             # Time components
             data['hour'] = data['timestamp'].dt.hour

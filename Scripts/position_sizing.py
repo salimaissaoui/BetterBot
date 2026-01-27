@@ -285,8 +285,11 @@ class MLPositionSizer:
             self.is_trained = True
             logging.info("Position sizing model loaded successfully")
             return True
-        except:
+        except FileNotFoundError:
             logging.info("No existing position sizing model found")
+            return False
+        except Exception as e:
+            logging.warning(f"Error loading position sizing model: {e}")
             return False
     
     def calculate_position_size(self, ib, symbol, prediction_confidence, current_price=None):

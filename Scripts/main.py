@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from .config import IB_HOST, IB_PORT, RETRAIN_FREQUENCY, IB_CLIENT_ID
 from .database import engine
-from Scripts.data_fetch import fetch_and_load_symbols, fetch_historical_data, insert_historical_data
+from .data_fetch import fetch_and_load_symbols, fetch_historical_data, insert_historical_data
 from .modeling import load_existing_model, retrain_model
 from .trade import on_bar, initialize_advanced_model
 from .utils import is_market_open

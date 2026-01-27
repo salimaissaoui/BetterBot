@@ -60,8 +60,10 @@ def compute_technical_indicators(data: pd.DataFrame) -> pd.DataFrame:
     loss = -diff.clip(upper=0)
     avg_gain = gain.rolling(window=RSI_PERIOD).mean()
     avg_loss = loss.rolling(window=RSI_PERIOD).mean()
-    rs = avg_gain / avg_loss
+    # Avoid division by zero when avg_loss is 0
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     data['rsi'] = 100 - (100 / (1 + rs))
+    data['rsi'] = data['rsi'].fillna(100)  # RSI = 100 when no losses (all gains)
 
     # 4. MACD
     ema_fast = data['close'].ewm(span=12, adjust=False).mean()
@@ -149,8 +151,8 @@ def prepare_features(data: pd.DataFrame):
     ]
 
     available_features = list(data.columns)
-    print(f"Available features: {available_features}")
-    print(f"Expected features: {expected_features}")
+    logging.debug(f"Available features: {available_features}")
+    logging.debug(f"Expected features: {expected_features}")
 
     X = data.reindex(columns=expected_features, fill_value=0)
     if 'target' in data.columns:
@@ -158,5 +160,5 @@ def prepare_features(data: pd.DataFrame):
     else:
         y = pd.Series(dtype=float)
 
-    print(f"Final X shape: {X.shape}, y length: {len(y)}")
+    logging.debug(f"Final X shape: {X.shape}, y length: {len(y)}")
     return X, y

@@ -10,7 +10,7 @@ from sklearn.ensemble import VotingClassifier
 
 # XGBoost & LightGBM
 from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
+from lightgbm import LGBMClassifier, early_stopping as lgb_early_stopping
 
 from .config import RETRAIN_FREQUENCY
 from .indicators import compute_technical_indicators, prepare_features
@@ -48,8 +48,8 @@ def train_model(X: pd.DataFrame, y: pd.Series):
         scoring = make_scorer(accuracy_score)
 
         # 1. Define base estimators
-        xgb = XGBClassifierWrapper(use_label_encoder=False, n_jobs=-1)
-        lgb = LGBMClassifierWrapper(n_jobs=-1)
+        xgb = XGBClassifierWrapper(n_jobs=-1, eval_metric='logloss')
+        lgb = LGBMClassifierWrapper(n_jobs=-1, verbose=-1)
 
         ensemble = VotingClassifier(
             estimators=[('xgb', xgb), ('lgb', lgb)],
@@ -118,12 +118,11 @@ def train_model(X: pd.DataFrame, y: pd.Series):
         y_train, y_val = y_np[:train_size], y_np[train_size:]
 
         # Fit XGB with early stopping
+        xgb_best.set_params(early_stopping_rounds=5)
         xgb_best.fit(
             X_train,
             y_train,
             eval_set=[(X_val, y_val)],
-            early_stopping_rounds=5,
-            eval_metric='logloss',
             verbose=False
         )
         # Fit LGB with early stopping
@@ -131,9 +130,7 @@ def train_model(X: pd.DataFrame, y: pd.Series):
             X_train,
             y_train,
             eval_set=[(X_val, y_val)],
-            early_stopping_rounds=5,
-            eval_metric='logloss',
-            verbose=False
+            callbacks=[lgb_early_stopping(5, verbose=False)]
         )
 
         # Now rebuild the ensemble with these updated fitted estimators

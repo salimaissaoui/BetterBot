@@ -1,4 +1,5 @@
 import logging
+import os
 import requests
 from datetime import datetime, timedelta
 
@@ -13,7 +14,10 @@ def fetch_articles_for_symbol(symbol, days_back=365, api_key=None):
     Increase days_back to get more news data.
     """
     # Provide your NewsAPI key here or from env
-    NEWSAPI_KEY = api_key or "YOUR_NEWSAPI_KEY"
+    NEWSAPI_KEY = api_key or os.getenv("NEWSAPI_KEY")
+    if not NEWSAPI_KEY:
+        logging.warning("No NewsAPI key configured. Set NEWSAPI_KEY environment variable.")
+        return []
     end_date = datetime.utcnow()
     start_date = end_date - timedelta(days=days_back)
     from_date_str = start_date.strftime("%Y-%m-%d")

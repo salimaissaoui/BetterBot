@@ -52,19 +52,29 @@ logging.basicConfig(
 
 class AdvancedTradingEnvironment:
     """
-    Custom trading environment for reinforcement learning that simulates 
+    Custom trading environment for reinforcement learning that simulates
     real market conditions and provides reward feedback for learning.
+    Compatible with gymnasium (gym) interface for stable_baselines3.
     """
-    
+
     def __init__(self, data: pd.DataFrame, initial_balance: float = 100000):
         self.data = data.reset_index(drop=True)
         self.initial_balance = initial_balance
         self.current_step = 0
         self.max_steps = len(data) - 1
+
+        # Define action and observation spaces for gym compatibility
+        if RL_AVAILABLE:
+            import gymnasium as gym
+            self.action_space = gym.spaces.Discrete(3)  # 0=Hold, 1=Buy, 2=Sell
+            self.observation_space = gym.spaces.Box(
+                low=-np.inf, high=np.inf, shape=(30,), dtype=np.float32
+            )
+
         self.reset()
         
-    def reset(self):
-        """Reset environment to initial state"""
+    def reset(self, seed=None, options=None):
+        """Reset environment to initial state (gymnasium compatible)"""
         self.current_step = 0
         self.balance = self.initial_balance
         self.shares_held = 0
@@ -74,8 +84,8 @@ class AdvancedTradingEnvironment:
         self.successful_trades = 0
         self.max_drawdown = 0
         self.peak_net_worth = self.initial_balance
-        
-        return self._get_observation()
+
+        return self._get_observation(), {}
     
     def _get_observation(self):
         """Get current state observation"""
@@ -148,11 +158,12 @@ class AdvancedTradingEnvironment:
                     
         elif action == 2:  # Sell
             if self.shares_held > 0:
-                proceeds = self.shares_held * current_price
+                shares_sold = self.shares_held  # Capture before resetting
+                proceeds = shares_sold * current_price
                 self.balance += proceeds
                 self.shares_held = 0
                 self.trades_made += 1
-                info['shares_sold'] = self.shares_held
+                info['shares_sold'] = shares_sold
         
         # Calculate portfolio value
         self.net_worth = self.balance + (self.shares_held * current_price)
@@ -179,8 +190,9 @@ class AdvancedTradingEnvironment:
             
         self.current_step += 1
         done = self.current_step >= self.max_steps
-        
-        return self._get_observation(), reward, done, info
+        truncated = False  # For gymnasium compatibility
+
+        return self._get_observation(), reward, done, truncated, info
 
 
 class DeepLearningModel:
