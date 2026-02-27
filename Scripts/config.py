@@ -1,5 +1,17 @@
 import os
 
+
+def _require_env(name: str) -> str:
+    """Raise ValueError at import time if a required environment variable is not set."""
+    value = os.getenv(name)
+    if value is None:
+        raise ValueError(
+            f"Required environment variable '{name}' is not set. "
+            f"Copy .env.example to .env and fill in your credentials."
+        )
+    return value
+
+
 # ======================== IBKR CONFIG ===========================
 # IBKR doesn't use API keys. It connects via host, port, and client ID.
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")           # Localhost (TWS or IB Gateway)
@@ -10,8 +22,8 @@ IB_CLIENT_ID_DATA = int(os.getenv("IB_CLIENT_ID_DATA", "3"))
 
 # ======================== DATABASE CONFIG ========================
 DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "Stocks123")
-DB_HOST = os.getenv("DB_HOST", "database-2.ctwgq2kqgrl6.us-east-2.rds.amazonaws.com")
+DB_PASSWORD = _require_env("DB_PASSWORD")           # required — no default
+DB_HOST = _require_env("DB_HOST")                   # required — no default
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "postgres")
 
