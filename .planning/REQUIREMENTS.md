@@ -10,7 +10,7 @@ Requirements for this milestone. Each maps to roadmap phases.
 ### Bug Fixes
 
 - [x] **BUG-01**: Bot can start without errors — git merge conflict in `Scripts/main.py` resolved
-- [ ] **BUG-02**: Database credentials loaded from environment variables — hardcoded AWS RDS password and hostname removed from `Scripts/config.py`
+- [x] **BUG-02**: Database credentials loaded from environment variables — hardcoded AWS RDS password and hostname removed from `Scripts/config.py`
 
 ### Exit Strategy
 
@@ -80,7 +80,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | BUG-01 | Phase 1 | Complete |
-| BUG-02 | Phase 1 | Pending |
+| BUG-02 | Phase 1 | Complete |
 | EXIT-01 | Phase 2 | Pending |
 | EXIT-02 | Phase 2 | Pending |
 | EXIT-03 | Phase 2 | Pending |
@@ -100,4 +100,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-02-27*
-*Last updated: 2026-02-27 after plan 01-01 completion (BUG-01 complete)*
+*Last updated: 2026-02-27 after plan 01-02 completion (BUG-01, BUG-02 complete — Phase 1 done)*

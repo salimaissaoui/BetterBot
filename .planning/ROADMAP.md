@@ -12,7 +12,7 @@ BetterBot has a working ML entry pipeline but no exit logic — the primary fail
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Infrastructure Unblock** - Resolve the merge conflict and remove hardcoded credentials so the bot can start
+- [x] **Phase 1: Infrastructure Unblock** - Resolve the merge conflict and remove hardcoded credentials so the bot can start
 - [ ] **Phase 2: Exit Management** - Give every position a hard stop, trailing stop, take-profit target, and circuit breaker
 - [ ] **Phase 3: Risk Gating** - Wire the existing regime detector and add VIX-based position-size scaling
 - [ ] **Phase 4: Sentiment Pipeline** - Add Yahoo Finance RSS + VADER as a lightweight confirming entry filter
@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01: Resolve git merge conflict in Scripts/main.py and verify startup reaches trading_loop()
-- [ ] 01-02: Move hardcoded AWS RDS credentials out of Scripts/config.py into environment variables
+- [x] 01-02: Move hardcoded AWS RDS credentials out of Scripts/config.py into environment variables
 
 ### Phase 2: Exit Management
 **Goal**: Every position entered by the bot has a defined exit — hard stop, trailing stop, take-profit target — persisted to the database and enforced on every bar
@@ -101,7 +101,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Infrastructure Unblock | 1/2 | In progress | - |
+| 1. Infrastructure Unblock | 2/2 | Complete | 2026-02-27 |
 | 2. Exit Management | 0/5 | Not started | - |
 | 3. Risk Gating | 0/2 | Not started | - |
 | 4. Sentiment Pipeline | 0/2 | Not started | - |
