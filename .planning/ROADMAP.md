@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: TBD
 
 Plans:
-- [ ] 01-01: Resolve git merge conflict in Scripts/main.py and verify startup reaches trading_loop()
+- [x] 01-01: Resolve git merge conflict in Scripts/main.py and verify startup reaches trading_loop()
 - [ ] 01-02: Move hardcoded AWS RDS credentials out of Scripts/config.py into environment variables
 
 ### Phase 2: Exit Management
@@ -101,7 +101,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Infrastructure Unblock | 0/2 | Not started | - |
+| 1. Infrastructure Unblock | 1/2 | In progress | - |
 | 2. Exit Management | 0/5 | Not started | - |
 | 3. Risk Gating | 0/2 | Not started | - |
 | 4. Sentiment Pipeline | 0/2 | Not started | - |
