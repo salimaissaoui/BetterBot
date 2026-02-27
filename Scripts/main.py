@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()  # Load .env into os.environ before config.py is imported
+
 import asyncio
 import logging
 import atexit
