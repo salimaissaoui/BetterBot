@@ -44,14 +44,14 @@ Plans:
   3. If the daily P&L drops below -2% of account NAV, the bot halts new entry signals for the rest of the trading day
   4. After a position closes, the database contains a structured record of why it was entered and why it was exited (signal values, regime state, exit type)
   5. On bot restart, open positions are reconciled from IBKR and the exit registry is rebuilt — no position is silently orphaned
-**Plans**: TBD
+**Plans**: 5 plans created 2026-02-27
 
 Plans:
-- [ ] 02-01: Implement ExitManager class with EntryRecord persistence and IBKR reconciliation on startup
-- [ ] 02-02: Implement hard stop loss (2x ATR) and take-profit target (4x ATR) placed at entry
-- [ ] 02-03: Implement trailing stop activation after 1x ATR gain, trailing at 1.5x ATR below high-water mark
-- [ ] 02-04: Implement daily P&L circuit breaker that halts new entries below -2% NAV
-- [ ] 02-05: Extend trade logging to capture entry reason, exit reason, and signal state as structured DB records
+- [ ] 02-01: ExitManager class + PositionRegistry/TradeLog ORM models + config constants + startup reconciliation wiring (Wave 1)
+- [ ] 02-02: Wire ExitManager into execute_trade() — exits, circuit breaker, entry registration, OBS-01 logging (Wave 2)
+- [ ] 02-03: Replace hardcoded stops in hourly_portfolio_scan() with ExitManager calls (Wave 2, parallel with 02-02)
+- [ ] 02-04: Integration smoke test — assert EXIT-01 through OBS-01 logic and schema (Wave 3)
+- [ ] 02-05: Human verification — confirm 5 ROADMAP success criteria in paper trading session (Wave 4)
 
 ### Phase 3: Risk Gating
 **Goal**: The existing KMeans market regime detector is wired and active, and VIX levels modify position sizing so the bot trades smaller in hostile conditions rather than going silent
