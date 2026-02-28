@@ -1,9 +1,9 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.0
-milestone_name: milestone
-status: complete
-last_updated: "2026-02-28T03:25:00.000Z"
+milestone_name: MVP
+status: archived
+last_updated: "2026-02-28T00:00:00.000Z"
 progress:
   total_phases: 5
   completed_phases: 5
@@ -15,67 +15,34 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-27)
+See: .planning/PROJECT.md (updated 2026-02-28)
 
-**Core value:** BetterBot v1.0 is complete — robust exits, risk gating, and sentiment filtering are all active.
-**Current focus:** Project Handoff and Live Validation
+**Core value:** Every trade entered must have a defined exit — no position held indefinitely.
+**Current focus:** Planning next milestone — or starting 14-day paper trading session (VAL-01)
 
 ## Current Position
 
-Phase: 5 of 5 (Validation)
-Plan: 1 of 1 in current phase — COMPLETE
-Status: Milestone v1.0 implementation complete. System ready for live validation.
-Last activity: 2026-02-27 — Completed 05-01: Live Validation and Handoff Preparation.
+Milestone v1.0 archived. All phases complete.
+Next action: `/gsd:new-milestone` to plan v1.1, or start paper trading session to satisfy VAL-01.
 
-Progress: [██████████] 100% (Milestone v1.0 complete)
-
-## Performance Metrics
-
-**Velocity:**
-- Total plans completed: 6
-- Average duration: ~3.0 min
-- Total execution time: ~0.3 hours
-
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 01-infrastructure-unblock | 2 | 3 min | 1.5 min |
-| 02-exit-management | 5 | 15 min | 3.0 min |
-
-**Recent Trend:**
-- Last 5 plans: 02-01 (3 min), 02-02 (4 min), 02-03 (3 min), 02-04 (2 min), 02-05 (skipped)
-- Trend: Consistent execution velocity
-
-*Updated after each plan completion*
+Progress: [██████████] 100% (Milestone v1.0 archived 2026-02-28)
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
-
-- [02-01] Created Scripts/exit_manager.py as a dedicated module for position registry and exit rules.
-- [02-01] Used a module-level singleton `exit_manager` for centralized state management.
-- [02-01] Added PositionRegistry and TradeLog tables for persistence and observability.
-- [02-01] Implemented startup reconciliation to recover state from IBKR live positions.
-- [02-03] Unified exit logic: hourly scan now uses ExitManager instead of hardcoded thresholds.
-- [02-04] Verified all exit logic with offline smoke tests (`verify_phase2.py`).
-- [Phase 02-04]: record_trade_pnl() initialises _circuit_breaker_date to today before accumulating P&L, preventing is_circuit_breaker_active() from resetting same-day circuit breaker activation
+All milestone decisions logged in PROJECT.md Key Decisions table.
 
 ### Pending Todos
 
-- Phase 3: Wire fit_regime_detector() at startup (RISK-01)
-- Phase 3: Add VIX fetching and position sizing logic (RISK-02)
+- **VAL-01**: Run 14-day paper trading session — start TWS in paper mode, run `python Scripts/main.py`, query TradeLog after 14 days.
 
 ### Blockers/Concerns
 
-- VIX data source: Need to confirm if `yfinance` is reliable for ^VIX or if we should use IBKR feed.
-- Regime model persistence: `joblib` needs to be added to requirements if not present.
+None — all implementation blockers resolved.
 
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: Completed 02-04-PLAN.md
+Stopped at: Milestone v1.0 archived
 Resume file: None
