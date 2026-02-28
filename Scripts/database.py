@@ -58,6 +58,44 @@ class Portfolio(Base):
     shares = Column(Float, nullable=False, default=0.0)
     cost_basis = Column(Float, nullable=False, default=0.0)
 
+class PositionRegistry(Base):
+    """One row per open position. Upserted on register_entry(), deleted on clear_position(). EXIT-04."""
+    __tablename__ = 'position_registry'
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    symbol       = Column(String(10), nullable=False, unique=True)
+    direction    = Column(String(5), nullable=False)        # 'long' or 'short'
+    entry_price  = Column(Float, nullable=False)
+    entry_time   = Column(TIMESTAMP, nullable=False)
+    atr_at_entry = Column(Float, nullable=False)
+    quantity     = Column(Integer, nullable=False)
+    stop_price   = Column(Float, nullable=False)
+    target_price = Column(Float, nullable=False)
+    trailing_high = Column(Float, nullable=False)
+    trailing_stop = Column(Float, nullable=True)            # NULL until trailing stop activates
+
+
+class TradeLog(Base):
+    """Structured record per trade decision (entry and exit). OBS-01."""
+    __tablename__ = 'trade_log'
+
+    id                  = Column(Integer, primary_key=True, autoincrement=True)
+    symbol              = Column(String(10), nullable=False)
+    action              = Column(String(20), nullable=False)   # BUY, SHORT, HARD_STOP_LOSS, TRAILING_STOP, TAKE_PROFIT, SELL, COVER
+    direction           = Column(String(5), nullable=True)     # 'long' or 'short'
+    quantity            = Column(Integer, nullable=True)
+    entry_price         = Column(Float, nullable=True)
+    exit_price          = Column(Float, nullable=True)
+    stop_price          = Column(Float, nullable=True)
+    target_price        = Column(Float, nullable=True)
+    entry_reason        = Column(String(200), nullable=True)   # e.g. 'ml_prob=0.720'
+    exit_reason         = Column(String(50), nullable=True)    # 'HARD_STOP_LOSS' | 'TRAILING_STOP' | 'TAKE_PROFIT' | 'SIGNAL' | None
+    regime_at_decision  = Column(String(20), nullable=True)    # 'bullish' | 'bearish' | 'volatile' | 'neutral'
+    sentiment_score     = Column(Float, nullable=True)         # None in Phase 2; Phase 4 fills this
+    vix_at_decision     = Column(Float, nullable=True)         # Added in Phase 5 [VAL-01]
+    prediction_confidence = Column(Float, nullable=True)
+    decision_time       = Column(TIMESTAMP, nullable=False, default=datetime.utcnow)
+
 Base.metadata.create_all(engine)
 logging.info("Database tables created or verified successfully.")
 

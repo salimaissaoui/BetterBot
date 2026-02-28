@@ -12,6 +12,8 @@ from scipy.signal import find_peaks
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
+import joblib
+import os
 
 # Financial libraries
 try:
@@ -39,6 +41,51 @@ class MarketRegimeDetector:
         self.regimes = {0: 'bearish', 1: 'sideways', 2: 'bullish', 3: 'volatile'}
         self.regime_model = None
         self.scaler = StandardScaler()
+        self.pca = None
+        self.feature_columns = None
+
+    def save_model(self, path: str = "regime_model.joblib"):
+        """Save regime detector state to disk"""
+        if self.regime_model is None:
+            logging.error("Cannot save unfitted regime model")
+            return False
+        
+        try:
+            state = {
+                'regime_model': self.regime_model,
+                'scaler': self.scaler,
+                'pca': self.pca,
+                'feature_columns': self.feature_columns,
+                'regimes': self.regimes,
+                'lookback_window': self.lookback_window,
+                'timestamp': datetime.now().isoformat()
+            }
+            joblib.dump(state, path)
+            logging.info(f"Market regime model saved to {path}")
+            return True
+        except Exception as e:
+            logging.error(f"Error saving regime model: {e}")
+            return False
+
+    def load_model(self, path: str = "regime_model.joblib"):
+        """Load regime detector state from disk"""
+        if not os.path.exists(path):
+            logging.warning(f"Regime model file {path} not found")
+            return False
+        
+        try:
+            state = joblib.load(path)
+            self.regime_model = state['regime_model']
+            self.scaler = state['scaler']
+            self.pca = state['pca']
+            self.feature_columns = state['feature_columns']
+            self.regimes = state['regimes']
+            self.lookback_window = state.get('lookback_window', 252)
+            logging.info(f"Market regime model loaded from {path} (Saved at: {state.get('timestamp', 'unknown')})")
+            return True
+        except Exception as e:
+            logging.error(f"Error loading regime model: {e}")
+            return False
         
     def calculate_regime_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Calculate features for regime detection"""
@@ -207,6 +254,9 @@ class MarketRegimeDetector:
         
         logging.info(f"Regime detector fitted with {len(combined_features)} samples")
         logging.info(f"Regime distribution: {regime_analysis}")
+        
+        # Save the model after successful fit
+        self.save_model()
         
         return True
     

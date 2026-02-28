@@ -55,6 +55,26 @@ def initialize_bot():
     # Initialize advanced model system
     logging.info("Initializing advanced model system...")
     advanced_success = initialize_advanced_model()
+    
+    # Initialize Market Regime Detector [RISK-01]
+    from .advanced_features import advanced_features
+    regime_detector = advanced_features.regime_detector
+    if not regime_detector.load_model():
+        logging.info("Fitting new Market Regime Detector using S&P 500 data...")
+        try:
+            import yfinance as yf
+            # Fetch 5 years of S&P 500 data for robust clustering
+            gspc = yf.download("^GSPC", period="5y", interval="1d")
+            if not gspc.empty:
+                # Rename columns to lowercase to match calculate_regime_features expectation
+                gspc.columns = [c.lower() for c in gspc.columns]
+                regime_detector.fit_regime_detector({"^GSPC": gspc})
+                logging.info("Market Regime Detector fitted and saved successfully.")
+            else:
+                logging.error("Failed to fetch S&P 500 data for regime detector.")
+        except Exception as e:
+            logging.error(f"Error fitting regime detector: {e}")
+
     if advanced_success:
         logging.info("Advanced model system initialized successfully")
         
@@ -72,6 +92,21 @@ def initialize_bot():
             logging.info("A/B testing setup completed")
     else:
         logging.warning("Advanced model initialization failed. Using basic model only.")
+
+    # Reconcile position exit registry against live IBKR positions [EXIT-04]
+    from .exit_manager import exit_manager
+    from .trade import active_positions as ap
+    logging.info("Reconciling position exit registry with IBKR...")
+    account_summary = ib.accountSummary()
+    account_nav = next(
+        (float(x.value) for x in account_summary if x.tag == 'NetLiquidation'), 0.0
+    )
+    live_positions = ib.positions()
+    exit_manager.reconcile_from_ibkr(live_positions, account_nav)
+    # Sync active_positions dict in trade.py to match reconciled registry
+    for sym, rec in exit_manager.positions.items():
+        ap[sym] = rec.direction
+    logging.info(f"Position reconciliation complete: {len(exit_manager.positions)} positions active")
 
     return symbols
 
@@ -105,8 +140,10 @@ def hourly_portfolio_scan():
     """
     global model, advanced_model
     from .model_performance import log_portfolio_performance
-    from .trade import get_current_position
-    
+    from .trade import get_current_position, close_position, active_positions as ap
+    from .exit_manager import exit_manager
+    from .database import TradeLog, get_session
+
     logging.info("Starting hourly portfolio scan...")
     
     try:
@@ -142,6 +179,40 @@ def hourly_portfolio_scan():
                     ib.cancelMktData(contract)
                     
                     if current_price and current_price > 0:
+                        # ExitManager exit check — fires before prediction-based decisions
+                        _exit_signal = exit_manager.check_exits(symbol, current_price)
+                        if _exit_signal:
+                            logging.info(f"[{symbol}] Hourly scan exit: {_exit_signal} at {current_price:.2f}")
+                            close_position(symbol)
+                            exit_manager.clear_position(symbol)
+                            if symbol in ap:
+                                del ap[symbol]
+                            # Log exit to TradeLog (OBS-01)
+                            try:
+                                with get_session() as _sess:
+                                    _sess.add(TradeLog(
+                                        symbol=symbol,
+                                        action=_exit_signal,
+                                        exit_price=current_price,
+                                        exit_reason=_exit_signal,
+                                        regime_at_decision=None,
+                                        decision_time=datetime.now(),
+                                    ))
+                                    _sess.commit()
+                            except Exception as _log_err:
+                                logging.warning(f"[{symbol}] Failed to log hourly exit: {_log_err}")
+                            # Skip prediction and action logic for this position
+                            position_analysis.append({
+                                'symbol': symbol, 'quantity': current_qty,
+                                'avg_cost': avg_cost, 'current_price': current_price,
+                                'market_value': market_value, 'unrealized_pnl': unrealized_pnl,
+                                'position_return': (current_price - avg_cost) / avg_cost,
+                                'prediction_prob': 0.5, 'confidence': 0.0,
+                                'recommended_action': _exit_signal,
+                                'action_reason': f'ExitManager: {_exit_signal}',
+                            })
+                            continue  # Skip rest of position processing for this symbol
+
                         # Calculate position performance
                         position_return = (current_price - avg_cost) / avg_cost
                         
@@ -168,6 +239,10 @@ def hourly_portfolio_scan():
                                         
                                         indicators = compute_technical_indicators(df)
                                         if not indicators.empty:
+                                            # Detect market regime for this position [RISK-02]
+                                            from .advanced_features import detect_market_regime
+                                            market_regime = detect_market_regime(df)
+                                            
                                             if hasattr(active_model, 'predict_proba') and hasattr(active_model, 'is_trained'):
                                                 # Advanced model
                                                 from .advanced_features import create_advanced_features
@@ -202,12 +277,6 @@ def hourly_portfolio_scan():
                         elif prediction_prob < 0.35 and confidence > 0.3:
                             action = "SELL"
                             action_reason = f"Strong sell signal (prob: {prediction_prob:.3f}, conf: {confidence:.3f})"
-                        elif position_return < -0.15:  # Stop loss at -15%
-                            action = "SELL"
-                            action_reason = f"Stop loss triggered (return: {position_return:.2%})"
-                        elif position_return > 0.25:  # Take profit at +25%
-                            action = "SELL"
-                            action_reason = f"Take profit triggered (return: {position_return:.2%})"
                         
                         position_info = {
                             'symbol': symbol,
@@ -241,14 +310,30 @@ def hourly_portfolio_scan():
             symbol = pos_info['symbol']
             action = pos_info['recommended_action']
             
+            # Circuit breaker suppresses new entries from hourly scan too
+            if action in ('BUY_MORE',) and exit_manager.is_circuit_breaker_active():
+                logging.info(f"[{symbol}] Circuit breaker active — suppressing hourly scan BUY_MORE")
+                continue
+
+            # Sentiment gate for BUY_MORE [SENT-02]
+            if action == 'BUY_MORE':
+                from .news import get_ticker_sentiment
+                _sent = get_ticker_sentiment(symbol)
+                if _sent < -0.05:
+                    logging.info(f"[{symbol}] BUY_MORE suppressed by sentiment: {_sent:.3f}")
+                    continue
+
             try:
                 if action == "BUY_MORE":
                     # Buy more shares with 10% of available funds
                     if available_funds > 1000:  # Minimum $1000 to trade
+                        # Extract market_regime if available from pos_info
+                        regime = pos_info.get('market_regime', 'unknown')
                         qty = submit_ml_sized_order(
                             symbol, 'buy', 
                             pos_info['prediction_prob'], 
-                            pos_info['current_price']
+                            pos_info['current_price'],
+                            market_regime=regime
                         )
                         if qty > 0:
                             logging.info(f"Executed BUY_MORE for {symbol}: +{qty} shares")
@@ -256,6 +341,21 @@ def hourly_portfolio_scan():
                 
                 elif action == "SELL":
                     close_position(symbol)
+                    exit_manager.clear_position(symbol)
+                    if symbol in ap:
+                        del ap[symbol]
+                    try:
+                        with get_session() as _sess:
+                            _sess.add(TradeLog(
+                                symbol=symbol,
+                                action='SELL',
+                                exit_price=pos_info.get('current_price'),
+                                exit_reason='SIGNAL',
+                                decision_time=datetime.now(),
+                            ))
+                            _sess.commit()
+                    except Exception:
+                        pass
                     logging.info(f"Executed SELL for {symbol}: closed position")
                     
             except Exception as trade_error:
@@ -312,15 +412,21 @@ def hourly_portfolio_scan():
                                     
                                         # Consider new position if strong signal
                                         if prediction_prob > 0.70 and confidence > 0.4:
-                                            current_price = df.iloc[-1]['close']
-                                            opportunity = {
-                                                'symbol': symbol,
-                                                'prediction_prob': prediction_prob,
-                                                'confidence': confidence,
-                                                'current_price': current_price,
-                                                'signal_strength': 'STRONG_BUY'
-                                            }
-                                            new_opportunities.append(opportunity)
+                                            # Sentiment gate for new opportunities [SENT-02]
+                                            from .news import get_ticker_sentiment
+                                            _sent = get_ticker_sentiment(symbol)
+                                            if _sent < -0.05:
+                                                logging.info(f"[Opportunity: {symbol}] Suppressed by sentiment: {_sent:.3f}")
+                                            else:
+                                                current_price = df.iloc[-1]['close']
+                                                opportunity = {
+                                                    'symbol': symbol,
+                                                    'prediction_prob': prediction_prob,
+                                                    'confidence': confidence,
+                                                    'current_price': current_price,
+                                                    'signal_strength': 'STRONG_BUY'
+                                                }
+                                                new_opportunities.append(opportunity)
                                             
                                     except Exception as pred_error:
                                         logging.warning(f"Error predicting for new opportunity {symbol}: {pred_error}")
