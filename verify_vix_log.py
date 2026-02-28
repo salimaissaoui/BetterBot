@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import unittest
 from unittest.mock import MagicMock, patch
 from Scripts.trade import execute_trade
@@ -12,6 +15,7 @@ class TestVixLogging(unittest.TestCase):
     @patch('Scripts.trade.submit_ml_sized_order')
     @patch('Scripts.trade._log_entry_to_db')
     @patch('Scripts.trade.Stock')
+    @patch.dict('Scripts.trade.active_positions', {}, clear=True)
     def test_vix_passed_to_log(self, mock_stock, mock_log, mock_submit, mock_em, mock_vix, mock_sent, mock_ensure, mock_ib):
         # Setup
         mock_vix.return_value = 25.0

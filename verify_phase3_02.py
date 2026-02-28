@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import unittest
 from unittest.mock import MagicMock, patch
 from Scripts.trade import submit_ml_sized_order
