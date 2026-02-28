@@ -22,6 +22,7 @@ from .model_performance import (
     log_trade_performance, log_portfolio_performance, log_model_prediction,
     run_adaptive_learning_cycle, setup_ab_testing, get_model_for_prediction
 )
+from .exit_manager import exit_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,34 +82,61 @@ def short_position(symbol, shares):
     ib.placeOrder(contract, order)
     logging.info(f"Successfully submitted SHORT SELL order for {symbol} with {shares} shares.")
 
-def submit_ml_sized_order(symbol, side, prediction_confidence, current_price=None):
-    """Submit an order with ML-calculated position size"""
+def submit_ml_sized_order(symbol, side, prediction_confidence, current_price=None, market_regime='unknown'):
+    """Submit an order with ML-calculated position size, adjusted by VIX and market regime. [RISK-02]"""
+    from .utils import get_current_vix
     ensure_ib_connected()
     try:
-        # Use ML position sizing to determine optimal quantity
+        # 1. Base quantity from ML position sizer
         qty = ml_position_sizer.calculate_position_size(
             ib, symbol, prediction_confidence, current_price
         )
-        
-        logging.info(f"ML Position Sizing: {symbol} - {qty} shares "
-                    f"(confidence: {prediction_confidence:.3f})")
+        if qty <= 0:
+            return 0
+
+        # 2. Risk Gating Multipliers
+        vix = get_current_vix()
+        vix_mult = 1.0 if vix <= 30 else 0.5
+
+        # Bullish=1.0, Neutral=0.5, Bearish/Volatile=0.25
+        regime_mult = 1.0
+        if market_regime == 'bullish':
+            regime_mult = 1.0
+        elif market_regime == 'sideways':  # Map sideways to Neutral logic
+            regime_mult = 0.5
+        elif market_regime in ('bearish', 'volatile'):
+            regime_mult = 0.25
+        else:
+            regime_mult = 0.5  # Neutral fallback for 'unknown' or others
+
+        final_mult = vix_mult * regime_mult
+        adjusted_qty = int(qty * final_mult)
+
+        # Floor at 1 if base qty was >= 1
+        if adjusted_qty < 1 and qty >= 1:
+            adjusted_qty = 1
+
+        logging.info(
+            f"Risk Gating for {symbol}: BaseQty={qty}, AdjustedQty={adjusted_qty} "
+            f"(VIX={vix:.2f}, Mult={vix_mult:.1f}; Regime={market_regime}, Mult={regime_mult:.2f}; "
+            f"FinalMult={final_mult:.2f})"
+        )
 
         contract = Stock(symbol, 'SMART', 'USD')
-        main_order = MarketOrder(side.upper(), qty)
-        
+        main_order = MarketOrder(side.upper(), adjusted_qty)
+
         # Allow after-hours trading if enabled
         if ALLOW_AFTER_HOURS_TRADING:
             main_order.outsideRth = True
 
         ib.placeOrder(contract, main_order)
-        logging.info(f"ML-sized {side.upper()} order placed: {symbol}, qty={qty}")
-        
-        return qty
-        
+        logging.info(f"ML-sized {side.upper()} order placed: {symbol}, qty={adjusted_qty}")
+
+        return adjusted_qty
+
     except Exception as e:
         logging.error(f"Error submitting ML-sized order for {symbol}: {e}")
         return 0
-
 def submit_notional_order_with_stop_loss(symbol, side, notional, stop_loss_pct):
     """Legacy function - kept for compatibility"""
     ensure_ib_connected()
@@ -133,9 +161,48 @@ def submit_notional_order_with_stop_loss(symbol, side, notional, stop_loss_pct):
     except Exception as e:
         logging.error(f"Error submitting order for {symbol}: {e}")
 
-     
 
+def _log_exit_to_db(symbol: str, exit_reason: str, exit_price: float) -> None:
+    """Write exit event to TradeLog table. OBS-01."""
+    try:
+        from .database import TradeLog, get_session
+        with get_session() as session:
+            record = TradeLog(
+                symbol=symbol,
+                action=exit_reason,
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                decision_time=datetime.now(),
+            )
+            session.add(record)
+    except Exception as e:
+        logging.warning(f"[{symbol}] Failed to write exit to TradeLog: {e}")
 
+def _log_entry_to_db(symbol: str, direction: str, quantity: int, entry_price,
+                     prob: float, regime: str, rec, sentiment_score: float = None,
+                     vix_score: float = None) -> None:
+    """Write entry event to TradeLog table. OBS-01."""
+    try:
+        from .database import TradeLog, get_session
+        with get_session() as session:
+            row = TradeLog(
+                symbol=symbol,
+                action='BUY' if direction == 'long' else 'SHORT',
+                direction=direction,
+                quantity=quantity,
+                entry_price=entry_price,
+                entry_reason=f'ml_prob={prob:.3f}',
+                regime_at_decision=regime,
+                prediction_confidence=prob,
+                stop_price=rec.stop_price if rec else None,
+                target_price=rec.target_price if rec else None,
+                sentiment_score=sentiment_score,
+                vix_at_decision=vix_score,
+                decision_time=datetime.now(),
+            )
+            session.add(row)
+    except Exception as e:
+        logging.warning(f"[{symbol}] Failed to write entry to TradeLog: {e}")
 
 
 def execute_trade(pred_results, model):
@@ -155,6 +222,59 @@ def execute_trade(pred_results, model):
     DEFAULT_COVER_THRESHOLD = 0.51
 
     for symbol, prob in pred_results:
+        # ----------------------------------------------------------------
+        # EXIT CHECK — unconditional, fires regardless of regime or circuit breaker
+        # Must be FIRST action per symbol (exits-before-entries rule)
+        # ----------------------------------------------------------------
+        if symbol in active_positions:
+            try:
+                contract = Stock(symbol, 'SMART', 'USD')
+                ticker = ib.reqMktData(contract, '', False, False)
+                ib.sleep(1)
+                current_price = ticker.last if ticker.last and ticker.last > 0 else ticker.close
+                ib.cancelMktData(contract)
+            except Exception as _exit_price_err:
+                logging.warning(f"[{symbol}] Error getting price for exit check: {_exit_price_err}")
+                current_price = None
+
+            if current_price and current_price > 0:
+                exit_signal = exit_manager.check_exits(symbol, current_price)
+                if exit_signal:
+                    close_position(symbol)
+                    exit_manager.clear_position(symbol)
+                    # Estimate P&L for circuit breaker (best effort — uses registry entry_price)
+                    _rec = exit_manager.positions.get(symbol)  # already cleared, use pre-clear value if available
+                    _pnl = 0.0
+                    _nav = 0.0
+                    try:
+                        _account = ib.accountSummary()
+                        _nav = next((float(x.value) for x in _account if x.tag == 'NetLiquidation'), 0.0)
+                    except Exception:
+                        pass
+                    exit_manager.record_trade_pnl(_pnl, _nav)  # _pnl=0 is safe; prevents divide-by-zero
+                    _log_exit_to_db(symbol, exit_signal, current_price)
+                    del active_positions[symbol]
+                    logging.info(f"[{symbol}] Exit executed: {exit_signal} at {current_price:.2f}")
+                    continue  # Skip all entry logic for this symbol this bar
+
+        # ----------------------------------------------------------------
+        # CIRCUIT BREAKER CHECK — entries only (exits above are unconditional)
+        # ----------------------------------------------------------------
+        if exit_manager.is_circuit_breaker_active():
+            logging.info(f"[{symbol}] Circuit breaker active — suppressing new entry signal")
+            continue
+
+        # ----------------------------------------------------------------
+        # SENTIMENT GATE — entries only [SENT-02]
+        # ----------------------------------------------------------------
+        from .news import get_ticker_sentiment
+        from .utils import get_current_vix
+        sentiment_score = get_ticker_sentiment(symbol)
+        vix_score = get_current_vix()
+        if sentiment_score < -0.05:
+            logging.info(f"[{symbol}] Entry suppressed by sentiment: {sentiment_score:.3f}")
+            continue
+
         # Reset thresholds to defaults for each symbol
         BUY_THRESHOLD = DEFAULT_BUY_THRESHOLD
         SELL_THRESHOLD = DEFAULT_SELL_THRESHOLD
@@ -167,23 +287,23 @@ def execute_trade(pred_results, model):
         obv = indicators.get('obv', 0.0)
         obv_prev = indicators.get('obv_prev', obv)
         obv_increasing = (obv > obv_prev)
-        
+
         # Detect market regime for additional context
         try:
             with get_session() as session:
                 recent_data = session.query(StockData).filter(
                     StockData.symbol == symbol
                 ).order_by(StockData.timestamp.desc()).limit(100).all()
-                
+
                 if len(recent_data) > 50:
                     df = pd.DataFrame([{
                         'open': d.open, 'high': d.high, 'low': d.low,
                         'close': d.close, 'volume': d.volume, 'timestamp': d.timestamp
                     } for d in reversed(recent_data)])
-                    
+
                     market_regime = detect_market_regime(df)
                     logging.debug(f"[{symbol}] Market regime: {market_regime}")
-                    
+
                     # Adjust thresholds based on regime
                     if market_regime == 'volatile':
                         BUY_THRESHOLD = 0.55  # Be more conservative in volatile markets
@@ -200,17 +320,17 @@ def execute_trade(pred_results, model):
         want_to_sell = (prob < SELL_THRESHOLD) and (symbol in active_positions and active_positions[symbol] == 'long')
         want_to_short = (prob < SHORT_THRESHOLD)
         want_to_cover = (prob > COVER_THRESHOLD) and (symbol in active_positions and active_positions[symbol] == 'short')
-        
+
         logging.debug(f"[{symbol}] Conditions - Buy: {want_to_buy}, Sell: {want_to_sell}, Short: {want_to_short}, Cover: {want_to_cover}")
         logging.debug(f"[{symbol}] Prob: {prob:.3f}, Thresholds - Buy: {BUY_THRESHOLD}, Short: {SHORT_THRESHOLD}")
 
         trade_executed = False
         entry_price = None
-        
+
         if want_to_buy:
             if symbol not in active_positions:
                 logging.info(f"ML-Enhanced BUY signal for {symbol}: prob={prob:.2f}, macd_diff={macd_diff:.4f}")
-                
+
                 # Get current price for tracking
                 try:
                     contract = Stock(symbol, 'SMART', 'USD')
@@ -221,13 +341,39 @@ def execute_trade(pred_results, model):
                 except Exception as e:
                     logging.warning(f"Error getting market data for {symbol}: {e}")
                     entry_price = None
-                
+
                 # Use ML position sizing for buy orders
-                qty = submit_ml_sized_order(symbol, 'buy', prob, entry_price)
+                qty = submit_ml_sized_order(
+                    symbol, 'buy', prob, entry_price, 
+                    market_regime=market_regime if 'market_regime' in locals() else 'unknown'
+                )
                 if qty > 0:
                     active_positions[symbol] = 'long'
                     trade_executed = True
-                    
+
+                    # Extract ATR from indicators for stop/target computation
+                    _atr_val = None
+                    try:
+                        with get_session() as _sess:
+                            _recent = _sess.query(StockData).filter(
+                                StockData.symbol == symbol
+                            ).order_by(StockData.timestamp.desc()).limit(100).all()
+                            if len(_recent) > 14:
+                                import pandas as _pd
+                                _df = _pd.DataFrame([{
+                                    'open': d.open, 'high': d.high, 'low': d.low,
+                                    'close': d.close, 'volume': d.volume, 'timestamp': d.timestamp
+                                } for d in reversed(_recent)])
+                                _ind = compute_technical_indicators(_df)
+                                if not _ind.empty and 'atr' in _ind.columns:
+                                    _atr_val = _ind['atr'].iloc[-1]
+                    except Exception as _atr_err:
+                        logging.warning(f"[{symbol}] ATR extraction failed: {_atr_err}")
+
+                    exit_manager.register_entry(symbol, 'long', entry_price or 0.0, _atr_val, qty)
+                    _log_entry_to_db(symbol, 'long', qty, entry_price, prob, market_regime if 'market_regime' in locals() else 'unknown',
+                                     exit_manager.positions.get(symbol), sentiment_score=sentiment_score, vix_score=vix_score)
+
                     # Log trade performance
                     log_trade_performance({
                         'symbol': symbol,
@@ -236,7 +382,8 @@ def execute_trade(pred_results, model):
                         'entry_price': entry_price,
                         'entry_time': datetime.now(),
                         'prediction_confidence': prob,
-                        'regime': globals().get('current_regime', 'unknown')
+                        'regime': locals().get('market_regime', 'unknown'),
+                        'entry_reason': f'ml_prob={prob:.3f}'
                     })
             else:
                 logging.info(f"Already holding {symbol}, no need to buy again.")
@@ -256,6 +403,7 @@ def execute_trade(pred_results, model):
                 exit_price = None
 
             close_position(symbol)
+            exit_manager.clear_position(symbol)
 
             # Log completed trade
             if symbol in active_positions:
@@ -264,7 +412,8 @@ def execute_trade(pred_results, model):
                     'action': 'SELL',
                     'exit_price': exit_price,
                     'exit_time': datetime.now(),
-                    'position_type': 'long'
+                    'position_type': 'long',
+                    'exit_reason': 'SIGNAL'
                 })
                 del active_positions[symbol]
             trade_executed = True
@@ -272,7 +421,7 @@ def execute_trade(pred_results, model):
         elif want_to_short:
             if symbol not in active_positions:
                 logging.info(f"ML-Enhanced SHORT signal for {symbol}: prob={prob:.2f}, macd_diff={macd_diff:.4f}")
-                
+
                 # Get current price for tracking
                 try:
                     contract = Stock(symbol, 'SMART', 'USD')
@@ -289,7 +438,29 @@ def execute_trade(pred_results, model):
                 if qty > 0:
                     active_positions[symbol] = 'short'
                     trade_executed = True
-                    
+
+                    # Extract ATR from indicators for stop/target computation
+                    _atr_val = None
+                    try:
+                        with get_session() as _sess:
+                            _recent = _sess.query(StockData).filter(
+                                StockData.symbol == symbol
+                            ).order_by(StockData.timestamp.desc()).limit(100).all()
+                            if len(_recent) > 14:
+                                import pandas as _pd
+                                _df = _pd.DataFrame([{
+                                    'open': d.open, 'high': d.high, 'low': d.low,
+                                    'close': d.close, 'volume': d.volume, 'timestamp': d.timestamp
+                                } for d in reversed(_recent)])
+                                _ind = compute_technical_indicators(_df)
+                                if not _ind.empty and 'atr' in _ind.columns:
+                                    _atr_val = _ind['atr'].iloc[-1]
+                    except Exception as _atr_err:
+                        logging.warning(f"[{symbol}] ATR extraction failed: {_atr_err}")
+
+                    exit_manager.register_entry(symbol, 'short', entry_price or 0.0, _atr_val, qty)
+                    _log_entry_to_db(symbol, 'short', qty, entry_price, prob, market_regime if 'market_regime' in locals() else 'unknown',
+                                     exit_manager.positions.get(symbol), sentiment_score=sentiment_score)
                     # Log trade performance
                     log_trade_performance({
                         'symbol': symbol,
@@ -298,10 +469,11 @@ def execute_trade(pred_results, model):
                         'entry_price': entry_price,
                         'entry_time': datetime.now(),
                         'prediction_confidence': 1.0 - prob,
-                        'regime': globals().get('current_regime', 'unknown')
+                        'regime': locals().get('market_regime', 'unknown'),
+                        'entry_reason': f'ml_prob={1.0-prob:.3f}'
                     })
-            else:
-                logging.info(f"Already holding {symbol} (long or short). Skipping short request.")
+                else:
+                    logging.info(f"Already holding {symbol} (long or short). Skipping short request.")
 
         elif want_to_cover:
             logging.info(f"Covering short for {symbol}: prob={prob:.2f}")
@@ -318,6 +490,7 @@ def execute_trade(pred_results, model):
                 exit_price = None
 
             close_position(symbol)
+            exit_manager.clear_position(symbol)
 
             # Log completed trade
             if symbol in active_positions:
@@ -326,14 +499,15 @@ def execute_trade(pred_results, model):
                     'action': 'COVER',
                     'exit_price': exit_price,
                     'exit_time': datetime.now(),
-                    'position_type': 'short'
+                    'position_type': 'short',
+                    'exit_reason': 'SIGNAL'
                 })
                 del active_positions[symbol]
             trade_executed = True
 
         else:
             logging.debug(f"{symbol}: prob={prob:.2f}, no trade signal triggered.")
-        
+
         # Log prediction for model validation
         if not trade_executed:
             log_model_prediction(symbol, prob, confidence=abs(prob - 0.5) * 2)
