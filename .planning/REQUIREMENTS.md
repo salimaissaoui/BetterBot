@@ -14,15 +14,15 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Exit Strategy
 
-- [ ] **EXIT-01**: Bot places a hard stop loss on every position entered — calculated as `entry_price - (2 * ATR)` at time of entry
-- [ ] **EXIT-02**: Bot places a take profit target on every position entered — minimum 2:1 reward-to-risk ratio (`entry_price + (4 * ATR)`)
-- [ ] **EXIT-03**: Bot activates a trailing stop after 1× ATR profit — trails at 1.5× ATR below the running high-water mark
-- [ ] **EXIT-04**: Position registry is persisted to PostgreSQL — entry price, stop price, take profit, trailing high, entry time stored per position; reconciled against IBKR on startup
-- [ ] **EXIT-05**: Bot halts new entries if daily P&L falls below -2% of account NAV — circuit breaker resets next trading day
+- [x] **EXIT-01**: Bot places a hard stop loss on every position entered — calculated as `entry_price - (2 * ATR)` at time of entry
+- [x] **EXIT-02**: Bot places a take profit target on every position entered — minimum 2:1 reward-to-risk ratio (`entry_price + (4 * ATR)`)
+- [x] **EXIT-03**: Bot activates a trailing stop after 1× ATR profit — trails at 1.5× ATR below the running high-water mark
+- [x] **EXIT-04**: Position registry is persisted to PostgreSQL — entry price, stop price, take profit, trailing high, entry time stored per position; reconciled against IBKR on startup
+- [x] **EXIT-05**: Bot halts new entries if daily P&L falls below -2% of account NAV — circuit breaker resets next trading day
 
 ### Observability
 
-- [ ] **OBS-01**: Bot logs entry reason and exit reason for every trade as structured records in the database — includes signal values, regime state, and sentiment score at time of decision
+- [x] **OBS-01**: Bot logs entry reason and exit reason for every trade as structured records in the database — includes signal values, regime state, and sentiment score at time of decision
 
 ### Risk Gating
 
@@ -81,12 +81,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | BUG-01 | Phase 1 | Complete |
 | BUG-02 | Phase 1 | Complete |
-| EXIT-01 | Phase 2 | Pending |
-| EXIT-02 | Phase 2 | Pending |
-| EXIT-03 | Phase 2 | Pending |
-| EXIT-04 | Phase 2 | Pending |
-| EXIT-05 | Phase 2 | Pending |
-| OBS-01 | Phase 2 | Pending |
+| EXIT-01 | Phase 2 | Complete |
+| EXIT-02 | Phase 2 | Complete |
+| EXIT-03 | Phase 2 | Complete |
+| EXIT-04 | Phase 2 | Complete |
+| EXIT-05 | Phase 2 | Complete |
+| OBS-01 | Phase 2 | Complete |
 | RISK-01 | Phase 3 | Pending |
 | RISK-02 | Phase 3 | Pending |
 | SENT-01 | Phase 4 | Pending |

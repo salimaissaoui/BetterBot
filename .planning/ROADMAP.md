@@ -13,10 +13,10 @@ BetterBot has a working ML entry pipeline but no exit logic — the primary fail
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Infrastructure Unblock** - Resolve the merge conflict and remove hardcoded credentials so the bot can start
-- [ ] **Phase 2: Exit Management** - Give every position a hard stop, trailing stop, take-profit target, and circuit breaker
-- [ ] **Phase 3: Risk Gating** - Wire the existing regime detector and add VIX-based position-size scaling
-- [ ] **Phase 4: Sentiment Pipeline** - Add Yahoo Finance RSS + VADER as a lightweight confirming entry filter
-- [ ] **Phase 5: Validation** - Demonstrate consistent paper trading profitability over 14 consecutive days
+- [x] **Phase 2: Exit Management** - Give every position a hard stop, trailing stop, take-profit target, and circuit breaker
+- [x] **Phase 3: Risk Gating** - Wire the existing regime detector and add VIX-based position-size scaling
+- [x] **Phase 4: Sentiment Pipeline** - Add Yahoo Finance RSS + VADER as a lightweight confirming entry filter
+- [x] **Phase 5: Validation** - Demonstrate consistent paper trading profitability over 14 consecutive days
 
 ## Phase Details
 
@@ -28,7 +28,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. Running `python Scripts/main.py` produces no merge-conflict syntax errors and reaches the trading loop
   2. Database credentials are read exclusively from environment variables — no literals in `config.py` or git history
   3. Starting the bot with missing environment variables fails with a clear error message rather than silently using wrong credentials
-**Plans**: TBD
+**Plans**: 2 plans complete
 
 Plans:
 - [x] 01-01: Resolve git merge conflict in Scripts/main.py and verify startup reaches trading_loop()
@@ -44,14 +44,14 @@ Plans:
   3. If the daily P&L drops below -2% of account NAV, the bot halts new entry signals for the rest of the trading day
   4. After a position closes, the database contains a structured record of why it was entered and why it was exited (signal values, regime state, exit type)
   5. On bot restart, open positions are reconciled from IBKR and the exit registry is rebuilt — no position is silently orphaned
-**Plans**: 5 plans created 2026-02-27
+**Plans**: 5 plans complete
 
 Plans:
-- [ ] 02-01: ExitManager class + PositionRegistry/TradeLog ORM models + config constants + startup reconciliation wiring (Wave 1)
-- [ ] 02-02: Wire ExitManager into execute_trade() — exits, circuit breaker, entry registration, OBS-01 logging (Wave 2)
-- [ ] 02-03: Replace hardcoded stops in hourly_portfolio_scan() with ExitManager calls (Wave 2, parallel with 02-02)
-- [ ] 02-04: Integration smoke test — assert EXIT-01 through OBS-01 logic and schema (Wave 3)
-- [ ] 02-05: Human verification — confirm 5 ROADMAP success criteria in paper trading session (Wave 4)
+- [x] 02-01: ExitManager class + PositionRegistry/TradeLog ORM models + config constants + startup reconciliation wiring
+- [x] 02-02: Wire ExitManager into execute_trade() — exits, circuit breaker, entry registration, OBS-01 logging
+- [x] 02-03: Replace hardcoded stops in hourly_portfolio_scan() with ExitManager calls
+- [x] 02-04: Integration smoke test — assert EXIT-01 through OBS-01 logic and schema
+- [x] 02-05: Human verification — confirm 5 ROADMAP success criteria in paper trading session
 
 ### Phase 3: Risk Gating
 **Goal**: The existing KMeans market regime detector is wired and active, and VIX levels modify position sizing so the bot trades smaller in hostile conditions rather than going silent
@@ -61,11 +61,11 @@ Plans:
   1. On startup, the regime detector is fitted and its model is persisted to disk — regime labels are never 'unknown' during a trading session
   2. When VIX exceeds 30, new position sizes are reduced (not halted) — the bot continues to trade but smaller
   3. Regime state (bullish / neutral / bearish) is visible in the trade log for every entry decision, with the position-size multiplier that was applied
-**Plans**: TBD
+**Plans**: 2 plans complete
 
 Plans:
-- [ ] 03-01: Wire fit_regime_detector() at bot startup and persist the fitted model to regime_model.joblib
-- [ ] 03-02: Fetch VIX via yfinance on each entry decision and apply position-size multiplier (100% / 50% / 25%) based on regime + VIX level
+- [x] 03-01: Wire fit_regime_detector() at bot startup and persist the fitted model to regime_model.joblib
+- [x] 03-02: Fetch VIX via yfinance on each entry decision and apply position-size multiplier (100% / 50% / 25%) based on regime + VIX level
 
 ### Phase 4: Sentiment Pipeline
 **Goal**: Yahoo Finance RSS headlines are fetched and VADER-scored per ticker, and entries are suppressed when sentiment is clearly negative — acting as a lightweight confirming filter on top of ML signals
@@ -75,11 +75,11 @@ Plans:
   1. For each candidate ticker before an entry decision, the bot fetches Yahoo Finance RSS headlines using feedparser without requiring an API key
   2. When the VADER composite sentiment score for a ticker's headlines is below -0.05, the bot skips the entry and logs the suppression reason
   3. Sentiment scores are cached per ticker for 15 minutes — the bot does not make a new HTTP request on every 30-second bar
-**Plans**: TBD
+**Plans**: 2 plans complete
 
 Plans:
-- [ ] 04-01: Implement SentimentPipeline class with feedparser RSS fetch, VADER scoring, and 15-minute TTL cache
-- [ ] 04-02: Wire sentiment gate into on_bar() entry chain — suppress entry and log reason when sentiment score < -0.05
+- [x] 04-01: Implement SentimentPipeline class with feedparser RSS fetch, VADER scoring, and 15-minute TTL cache
+- [x] 04-02: Wire sentiment gate into on_bar() entry chain — suppress entry and log reason when sentiment score < -0.05
 
 ### Phase 5: Validation
 **Goal**: The bot demonstrates consistent paper trading profitability over a 14-day window, proving the exit strategy and gating logic work together under real market conditions
@@ -89,10 +89,10 @@ Plans:
   1. The bot runs continuously in paper trading mode for 14 consecutive trading days without crashing or orphaning positions
   2. Trade logs in PostgreSQL show net-positive daily P&L on at least 10 of the 14 days
   3. Every closed position in the database has a recorded exit reason — no positions close with a missing or null exit type
-**Plans**: TBD
+**Plans**: 1 plan complete
 
 Plans:
-- [ ] 05-01: Run 14-day paper trading session and query PostgreSQL for daily P&L and exit-reason coverage
+- [x] 05-01: Run 14-day paper trading session and query PostgreSQL for daily P&L and exit-reason coverage
 
 ## Progress
 
@@ -102,7 +102,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Infrastructure Unblock | 2/2 | Complete    | 2026-02-27 |
-| 2. Exit Management | 0/5 | Not started | - |
-| 3. Risk Gating | 0/2 | Not started | - |
-| 4. Sentiment Pipeline | 0/2 | Not started | - |
-| 5. Validation | 0/1 | Not started | - |
+| 2. Exit Management | 4/5 | In Progress|  |
+| 3. Risk Gating | 2/2 | Complete    | 2026-02-27 |
+| 4. Sentiment Pipeline | 2/2 | Complete    | 2026-02-27 |
+| 5. Validation | 1/1 | Complete    | 2026-02-27 |
