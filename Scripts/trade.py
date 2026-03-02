@@ -342,6 +342,12 @@ def execute_trade(pred_results, model):
                     logging.warning(f"Error getting market data for {symbol}: {e}")
                     entry_price = None
 
+                # Skip if price is unavailable (e.g. after hours with no delayed quote)
+                import math as _math
+                if entry_price is None or (isinstance(entry_price, float) and _math.isnan(entry_price)) or (entry_price is not None and entry_price <= 0):
+                    logging.warning(f"[{symbol}] Skipping BUY — price unavailable: {entry_price}")
+                    return model
+
                 # Use ML position sizing for buy orders
                 qty = submit_ml_sized_order(
                     symbol, 'buy', prob, entry_price, 
@@ -432,6 +438,12 @@ def execute_trade(pred_results, model):
                 except Exception as e:
                     logging.warning(f"Error getting market data for {symbol}: {e}")
                     entry_price = None
+
+                # Skip if price is unavailable (e.g. after hours with no delayed quote)
+                import math as _math
+                if entry_price is None or (isinstance(entry_price, float) and _math.isnan(entry_price)) or (entry_price is not None and entry_price <= 0):
+                    logging.warning(f"[{symbol}] Skipping SHORT — price unavailable: {entry_price}")
+                    return model
 
                 # Use ML position sizing for short orders
                 qty = submit_ml_sized_order(symbol, 'sell', 1.0 - prob, entry_price)  # Invert confidence for shorting
@@ -612,8 +624,19 @@ def on_bar(bar, model):
                                 
                                 # Get prediction from A/B testing system or advanced model
                                 variant_name, selected_model = get_model_for_prediction()
-                                if selected_model:
-                                    prediction_prob = selected_model.predict_proba(latest_features)[0][1]
+                                # Guard: if selected_model is not a real model (e.g. unset string placeholder), fall back
+                                if selected_model and not isinstance(selected_model, str):
+                                    if variant_name == 'basic_model':
+                                        # Basic model expects basic features — recompute them
+                                        _basic_ind = compute_technical_indicators(df)
+                                        _basic_feat, _ = prepare_features(_basic_ind)
+                                        if _basic_feat is not None and not _basic_feat.empty:
+                                            _feat_for_model = _basic_feat.iloc[-1:].values
+                                        else:
+                                            _feat_for_model = latest_features
+                                    else:
+                                        _feat_for_model = latest_features
+                                    prediction_prob = selected_model.predict_proba(_feat_for_model)[0][1]
                                     logging.debug(f"[{symbol}] Using model variant: {variant_name}")
                                 else:
                                     prediction_prob = advanced_model.predict_proba(latest_features)[0][1]

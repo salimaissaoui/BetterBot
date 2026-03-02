@@ -80,9 +80,10 @@ def initialize_bot():
         
         # Setup A/B testing if we have both basic and advanced models
         if model is not None:
+            from .trade import advanced_model as _adv_model
             models = {
                 'basic_model': model,
-                'advanced_model': 'advanced'  # Placeholder - actual model is in trade.py
+                'advanced_model': _adv_model,  # Actual model object from trade.py
             }
             allocations = {
                 'basic_model': 30.0,  # 30% allocation to basic model

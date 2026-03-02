@@ -52,7 +52,7 @@ MARKET_CLOSE_MINUTE = 0
 TIMEZONE_NAME = "US/Eastern"
 
 # =================== Trading Settings ===================
-ALLOW_AFTER_HOURS_TRADING = True  # Allow trading when market is closed
+ALLOW_AFTER_HOURS_TRADING = False  # Only trade during market hours (real-time prices required for valid entries)
 
 # Exit management constants (Phase 2) — overridable via environment variables
 HARD_STOP_ATR_MULT   = float(os.getenv("HARD_STOP_ATR_MULT",   "2.0"))   # EXIT-01: stop = entry ± 2*ATR
