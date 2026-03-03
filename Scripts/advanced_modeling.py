@@ -44,6 +44,7 @@ except ImportError:
 from .database import get_session, StockData
 from .indicators import compute_technical_indicators, prepare_features
 from .config import TARGET_THRESHOLD
+from .advanced_features import create_advanced_features
 
 logging.basicConfig(
     level=logging.INFO,
@@ -806,12 +807,13 @@ def run_advanced_training():
             # Get recent data for multiple symbols
             symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']  # Sample symbols
             
-            all_data = []
+            all_features = []
+            all_targets = []
             for symbol in symbols:
                 data = session.query(StockData).filter(
                     StockData.symbol == symbol
                 ).order_by(StockData.timestamp.desc()).limit(1000).all()
-                
+
                 if len(data) > 100:
                     df = pd.DataFrame([{
                         'open': d.open,
@@ -822,35 +824,46 @@ def run_advanced_training():
                         'timestamp': d.timestamp,
                         'symbol': symbol
                     } for d in reversed(data)])
-                    
-                    # Compute indicators
-                    indicators_df = compute_technical_indicators(df)
-                    if not indicators_df.empty:
-                        all_data.append(indicators_df)
-            
-            if not all_data:
+
+                    # Use create_advanced_features to match the prediction pipeline (134 features)
+                    adv_df = create_advanced_features(df, symbol)
+                    if adv_df.empty:
+                        continue
+
+                    # Compute target: next-bar return >= threshold (same as indicators.py)
+                    future_return = df['close'].shift(-1) / df['close'] - 1
+                    target = (future_return >= TARGET_THRESHOLD).astype(int)
+
+                    # Align lengths (create_advanced_features may drop leading rows)
+                    min_len = min(len(adv_df), len(target))
+                    if min_len < 50:
+                        continue
+
+                    adv_features = adv_df.iloc[:min_len].reset_index(drop=True)
+                    sym_targets = target.iloc[:min_len].reset_index(drop=True)
+
+                    all_features.append(adv_features)
+                    all_targets.append(sym_targets)
+
+            if not all_features:
                 logging.error("No data available for training")
                 return False
-            
+
             # Combine all data
-            combined_data = pd.concat(all_data, ignore_index=True)
-            
-            # Prepare features
-            features, targets = prepare_features(combined_data)
-            if features.empty or targets.empty:
-                logging.error("No features prepared for training")
-                return False
-            
+            features = pd.concat(all_features, ignore_index=True)
+            targets = pd.concat(all_targets, ignore_index=True)
+            combined_data = features  # for RL agent below
+
             # Remove any remaining NaN values
             valid_indices = ~(features.isna().any(axis=1) | targets.isna())
             features = features[valid_indices]
             targets = targets[valid_indices]
-            
+
             if len(features) < 100:
                 logging.error("Insufficient clean data for training")
                 return False
-            
-            logging.info(f"Training with {len(features)} samples")
+
+            logging.info(f"Training with {len(features)} samples and {features.shape[1]} advanced features")
             
             # Train ensemble model
             advanced_model.train(features, targets)

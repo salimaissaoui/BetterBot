@@ -43,6 +43,8 @@ def ensure_ib_connected():
     if not ib.isConnected():
         logging.info("Connecting to IBKR for trading operations...")
         ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID_TRADE)
+        # Enable delayed market data so prices work without a live subscription
+        ib.reqMarketDataType(3)
 
 def get_current_position(symbol):
     ensure_ib_connected()
@@ -214,6 +216,9 @@ def execute_trade(pred_results, model):
         return
     elif not is_market_open() and ALLOW_AFTER_HOURS_TRADING:
         logging.info("Market is closed but after-hours trading is enabled. Proceeding with trades.")
+
+    # Ensure IB is connected and delayed market data is enabled before any reqMktData calls
+    ensure_ib_connected()
 
     # Default thresholds
     DEFAULT_BUY_THRESHOLD = 0.51
